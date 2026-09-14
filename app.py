@@ -1,6 +1,8 @@
 import streamlit as st
 import json
 import io
+import os
+import base64
 import sqlite3
 import time
 import requests
@@ -351,13 +353,34 @@ def create_daily_briefing() -> str:
     system_prompt = "너는 친근하고 따뜻한 비서 태민이야. 편안한 반말로 군더더기 없이 짧고 다정하게 말해줘."
     return generate_with_key_rotation(briefing_prompt, system_prompt, use_tools=False, enable_search=False)
 
-# 8. 메인 UI
-# 기존의 st.title("🤖 2int의 AI 비서 태민") 대신 아래 코드로 교체
-col_icon, col_title = st.columns([1, 8], vertical_alignment="center")
-with col_icon:
-    st.image("profile.jpg", width=65)  # 업로드한 파일명
-with col_title:
-    st.title("2int의 AI친구 태민")
+# 8. 모바일 반응형 헤더 (사진과 타이틀 밀착)
+def get_image_base64(path):
+    if os.path.exists(path):
+        with open(path, "rb") as f:
+            return base64.b64encode(f.read()).decode()
+    return ""
+
+img_base64 = get_image_base64("profile.jpg")
+if not img_base64:
+    img_base64 = get_image_base64("profile.png")
+
+if img_base64:
+    header_html = f"""
+    <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 24px;">
+        <img src="data:image/jpeg;base64,{img_base64}" 
+             style="width: 44px; height: 44px; border-radius: 50%; object-fit: cover; flex-shrink: 0; box-shadow: 0 2px 6px rgba(0,0,0,0.15);" />
+        <span style="font-size: 1.6rem; font-weight: 700; white-space: nowrap; letter-spacing: -0.5px;">2int의 AI 비서 태민</span>
+    </div>
+    """
+else:
+    header_html = """
+    <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 24px;">
+        <span style="font-size: 2rem;">🤖</span>
+        <span style="font-size: 1.6rem; font-weight: 700; white-space: nowrap; letter-spacing: -0.5px;">2int의 AI 비서 태민</span>
+    </div>
+    """
+
+st.markdown(header_html, unsafe_allow_html=True)
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
