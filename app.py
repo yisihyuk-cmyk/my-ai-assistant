@@ -146,27 +146,45 @@ def search_archive_notes(category: str = "", keyword: str = "") -> str:
         return f"메모 조회 실패: {str(e)}"
 
 # 고속 직접 메모 삭제 함수 (API 호출 절약용)
+# 고속 직접 메모 삭제 함수 (유연한 단어 매칭)
 def direct_delete_memo(user_text: str):
-    # 불필요한 단어 제거하고 핵심 키워드 추출
-    stop_words = ["삭제", "지워", "취소", "해줘", "관련해서", "메모", "항목", "에서", "좀", "해"]
-    words = user_text.split()
-    target_words = [w for w in words if not any(sw in w for sw in stop_words)]
-    keyword = "".join(target_words).strip()
-    
     conn = sqlite3.connect("assistant_archive.db")
     c = conn.cursor()
-    if keyword:
-        c.execute("SELECT id, content FROM archives WHERE content LIKE ? ORDER BY id DESC LIMIT 1", (f"%{keyword}%",))
-    else:
-        c.execute("SELECT id, content FROM archives ORDER BY id DESC LIMIT 1")
-    target = c.fetchone()
     
-    if target:
-        note_id, content = target
+    # 1. 전체 메모 불러오기
+    c.execute("SELECT id, content FROM archives ORDER BY id DESC")
+    all_notes = c.fetchall()
+    
+    if not all_notes:
+        conn.close()
+        return False, "현재 보관함에 저장된 메모가 없습니다."
+    
+    # 2. 사용자가 말한 문장의 핵심 명사/단어 조각들 중 메모 내용과 겹치는 것 찾기
+    stop_words = ["삭제", "지워", "취소", "해줘", "관련", "해서", "메모", "항목", "에서", "좀", "해", "등록", "알려줘"]
+    words = [w.strip() for w in user_text.split() if len(w.strip()) > 1 and not any(sw in w for sw in stop_words)]
+    
+    matched_target = None
+    for note_id, content in all_notes:
+        # 단어 조각이 포함되어 있는지 확인
+        if any(word in content for word in words):
+            matched_target = (note_id, content)
+            break
+        # 반대로 메모의 단어가 사용자의 말에 들어있는지 확인
+        if any(part in user_text for part in content.split() if len(part) > 1):
+            matched_target = (note_id, content)
+            break
+
+    # 만약 특정 단어가 안 맞았는데 메모가 딱 1개뿐이라면 그 1개를 삭제
+    if not matched_target and len(all_notes) == 1:
+        matched_target = all_notes[0]
+
+    if matched_target:
+        note_id, content = matched_target
         c.execute("DELETE FROM archives WHERE id = ?", (note_id,))
         conn.commit()
         conn.close()
         return True, f"'{content}' 메모를 보관함에서 삭제했습니다."
+    
     conn.close()
     return False, "삭제할 해당하는 메모를 찾지 못했습니다."
 
