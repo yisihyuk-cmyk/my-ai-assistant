@@ -384,11 +384,6 @@ with st.sidebar:
     st.header("🎙️ 비서 목소리")
     st.success("✨ 맞춤 복제 보이스(태민) 연결됨")
 
-    if ntfy_topic:
-        if st.button("📲 스마트폰 알림 테스트 전송", use_container_width=True):
-            send_push_notification("태민이 알림 테스트", "안녕! 알림 채널 정상 연결됐어. 언제든 필요할 때 말 걸어줘!")
-            st.toast("스마트폰으로 알림을 보냈어!")
-
     st.write("---")
     st.header("🗂️ 아카이브 보관함")
     conn = sqlite3.connect("assistant_archive.db")
