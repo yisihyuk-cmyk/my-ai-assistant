@@ -1,56 +1,72 @@
 import streamlit as st
-import sqlite3
+import json
 from datetime import datetime
 import google.generativeai as genai
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
 
-# 모바일 화면 최적화 설정
 st.set_page_config(page_title="나만의 AI 비서", page_icon="🤖")
-st.title("🤖 나만의 개인 비서")
+st.title("🤖 나만의 구글 캘린더 비서")
 
-# API 키 설정
+# 1. 인증 설정
 api_key = st.secrets.get("GEMINI_API_KEY")
-if not api_key:
-    st.error("API 키가 설정되지 않았습니다.")
+calendar_id = st.secrets.get("CALENDAR_ID", "primary")
+service_account_str = st.secrets.get("GCP_SERVICE_ACCOUNT_JSON")
+
+if not api_key or not service_account_str:
+    st.error("API 키 또는 구글 서비스 계정 설정이 필요합니다.")
     st.stop()
 
 genai.configure(api_key=api_key)
 
-# 1. 로컬 저장소 초기화
-def init_db():
-    conn = sqlite3.connect("assistant.db")
-    c = conn.cursor()
-    c.execute("CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY, content TEXT, created_at TEXT)")
-    conn.commit()
-    conn.close()
+# 구글 캘린더 클라이언트 생성
+service_account_info = json.loads(service_account_str)
+creds = service_account.Credentials.from_service_account_info(
+    service_account_info,
+    scopes=["https://www.googleapis.com/auth/calendar"]
+)
+service = build("calendar", "v3", credentials=creds)
 
-init_db()
+# 2. 비서 도구 (일정 등록 / 일정 조회)
+def add_calendar_event(summary: str, start_iso: str, end_iso: str, description: str = "") -> str:
+    """구글 캘린더에 일정을 등록합니다. 시간은 한국 표준시 ISO 형식(예: 2026-09-15T14:00:00+09:00)이어야 합니다."""
+    event = {
+        'summary': summary,
+        'description': description,
+        'start': {'dateTime': start_iso, 'timeZone': 'Asia/Seoul'},
+        'end': {'dateTime': end_iso, 'timeZone': 'Asia/Seoul'},
+    }
+    service.events().insert(calendarId=calendar_id, body=event).execute()
+    return f"구글 캘린더 등록 완료: {summary} ({start_iso} ~ {end_iso})"
 
-def save_memo(content: str) -> str:
-    """사용자의 일정이나 중요한 메모, 할 일을 기록합니다."""
-    conn = sqlite3.connect("assistant.db")
-    c = conn.cursor()
-    c.execute("INSERT INTO notes (content, created_at) VALUES (?, ?)", 
-              (content, datetime.now().strftime("%Y-%m-%d %H:%M")))
-    conn.commit()
-    conn.close()
-    return f"기록 완료: '{content}'"
+def get_calendar_events(days: int = 7) -> str:
+    """오늘부터 향후 N일 동안의 구글 캘린더 일정을 조회합니다."""
+    now = datetime.utcnow().isoformat() + 'Z'
+    events_result = service.events().list(
+        calendarId=calendar_id,
+        timeMin=now,
+        maxResults=15,
+        singleEvents=True,
+        orderBy='startTime'
+    ).execute()
+    events = events_result.get('items', [])
+    if not events:
+        return "예정된 일정이 없습니다."
+    
+    res = []
+    for e in events:
+        start = e['start'].get('dateTime', e['start'].get('date'))
+        res.append(f"- {e.get('summary', '제목 없음')} ({start})")
+    return "\n".join(res)
 
-def read_memos() -> str:
-    """저장된 모든 메모와 일정을 확인합니다."""
-    conn = sqlite3.connect("assistant.db")
-    c = conn.cursor()
-    c.execute("SELECT content, created_at FROM notes ORDER BY id DESC LIMIT 10")
-    rows = c.fetchall()
-    conn.close()
-    if not rows:
-        return "현재 저장된 메모나 일정이 없습니다."
-    return "\n".join([f"- [{time}] {text}" for text, time in rows])
+tools = [add_calendar_event, get_calendar_events]
 
-# 2. 모델 설정
+# 3. 모델 설정
+now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 model = genai.GenerativeModel(
     model_name="gemini-1.5-flash",
-    tools=[save_memo, read_memos],
-    system_instruction="너는 친절한 모바일 개인 비서야. 사용자가 일정이나 메모를 남기면 save_memo 도구로 저장해주고, 확인해달라고 하면 read_memos 도구로 목록을 확인해서 친절히 알려줘."
+    tools=tools,
+    system_instruction=f"너는 사용자의 구글 캘린더 개인 비서야. 현재 시간은 {now_str} (KST)야. 일정을 등록해달라고 하면 시작과 종료 시간을 맞춰 add_calendar_event를 부르고, 일정을 물어보면 get_calendar_events로 확인해서 답해줘."
 )
 
 if "chat" not in st.session_state:
@@ -59,13 +75,11 @@ if "chat" not in st.session_state:
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# 대화 내용 표시
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.write(msg["content"])
 
-# 입력창
-if user_input := st.chat_input("일정이나 메모를 말씀해주세요..."):
+if user_input := st.chat_input("구글 캘린더 일정이나 할 일을 말씀해주세요..."):
     st.session_state.messages.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.write(user_input)
