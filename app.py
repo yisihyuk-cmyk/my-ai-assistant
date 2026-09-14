@@ -55,15 +55,23 @@ creds = service_account.Credentials.from_service_account_info(
 )
 service = build("calendar", "v3", credentials=creds)
 
-# 3. ElevenLabs 실시간 음성 생성 함수
+# 3. ElevenLabs 실시간 음성 생성 함수 (발음 교정 포함)
+def fix_pronunciation(text: str) -> str:
+    # 혹시라도 음성 인식기가 오인식하기 쉬운 발음들을 정확한 이름으로 자동 보정
+    misheard_names = ["정숙", "영수", "진수", "정서", "점수", "정선"]
+    for wrong in misheard_names:
+        text = text.replace(wrong, "정수")
+    return text
+
 def generate_elevenlabs_audio(text: str) -> bytes:
     if not eleven_api_key:
         return b""
     try:
+        clean_text = fix_pronunciation(text)
         el_client = ElevenLabs(api_key=eleven_api_key)
         audio_generator = el_client.text_to_speech.convert(
             voice_id=eleven_voice_id,
-            text=text,
+            text=clean_text,
             model_id="eleven_multilingual_v2",
             voice_settings={
                 "stability": 0.5,
@@ -274,11 +282,11 @@ def direct_delete_memo(user_text: str):
     conn.close()
     return False, "어떤 메모를 지워야 할지 못 찾겠어. 다시 말해줘!"
 
-# 6. 백그라운드 자동 메모 감지 (gemini-3.6-flash 사용)
+# 6. 백그라운드 자동 메모 감지
 def auto_detect_and_remember(user_prompt: str):
     if len(user_prompt.strip()) < 5:
         return
-    trigger_ignore = ["브리핑", "날씨", "몇 시", "삭제", "지워", "안녕", "확인해줘", "일정", "보조제", "약"]
+    trigger_ignore = ["브리핑", "날씨", "몇 시", "삭제", "지워", "안녕", "확인해줘", "일정", "보조제", "약", "이름"]
     if any(k in user_prompt for k in trigger_ignore):
         return
 
@@ -307,7 +315,7 @@ def auto_detect_and_remember(user_prompt: str):
 
 custom_tools = [add_calendar_event, get_calendar_events, delete_calendar_event, save_archive_note, search_archive_notes]
 
-# 7. Gemini 로테이션 엔진 (gemini-3.6-flash 사용)
+# 7. Gemini 로테이션 엔진
 if "key_index" not in st.session_state:
     st.session_state.key_index = 0
 
@@ -346,7 +354,7 @@ def generate_with_key_rotation(contents, system_prompt, use_tools=True, enable_s
 
     return f"API 연결이 원활하지 않아. (원인: {last_error if last_error else '할당량 초과'})"
 
-# 8. 데일리 브리핑
+# 8. 데일리 브리핑 (이름 '정수' 반영)
 def create_daily_briefing() -> str:
     weather_info = get_current_weather()
     today_events = get_today_calendar_events_str()
@@ -364,6 +372,7 @@ def create_daily_briefing() -> str:
 
     briefing_prompt = f"""
 너는 가장 친한 친구이자 든든한 전담 비서 '태민'이야.
+사용자의 이름은 '정수'야. 항상 다정하게 '정수야'라고 불러줘.
 아래 정보를 보고 [친근하고 다정한 반말]로 딱 3~4문장 이내로 핵심만 요약 브리핑해줘.
 특수문자나 마크다운 기호 없이 자연스럽게 이어지는 대화체여야 해.
 
@@ -373,17 +382,17 @@ def create_daily_briefing() -> str:
 - 최근 메모/할 일/단상: {recent_mem_str}
 
 [필수 구성: 딱 3~4문장]
-1. 다정한 아침 인사와 오늘 날씨/옷차림 팁
+1. 다정한 아침 인사(정수야, 좋은 아침! 등)와 오늘 날씨/옷차림 팁
 2. 오늘 잡힌 주요 일정과 최근 남겨둔 생각/할 일 짧게 짚어주기
 3. 아침 식사 후 약 챙겨 먹고 저녁 약도 잊지 말라는 건강 당부와 활기찬 응원
 """
-    system_prompt = "너는 친근하고 따뜻한 비서 태민이야. 편안한 반말로 군더더기 없이 짧고 다정하게 말해줘."
+    system_prompt = "너는 친근하고 따뜻한 비서 태민이야. 사용자는 정수야. 편안한 반말로 군더더기 없이 짧고 다정하게 말해줘."
     briefing_text = generate_with_key_rotation(briefing_prompt, system_prompt, use_tools=False, enable_search=False)
     
     send_push_notification("☀️ 태민이의 오늘 아침 브리핑", briefing_text)
     return briefing_text
 
-# 9. 사이드바 설정 (음성 상태 안내 및 아카이브)
+# 9. 사이드바 설정
 with st.sidebar:
     st.header("🎙️ 비서 목소리")
     st.success("✨ 맞춤 복제 보이스(태민) 연결됨")
@@ -481,15 +490,16 @@ with col1:
 
 text_input = st.chat_input("일정, 질문, 냉장고 추천 등 무엇이든 편하게 말해줘...")
 
+# 입력 처리: 키보드 입력(text_input)을 최우선으로 체크하도록 수정
 current_user_prompt = None
 if trigger_briefing:
     current_user_prompt = "오늘 데일리 브리핑 시작해줘"
+elif text_input:
+    current_user_prompt = text_input
 elif voice_input:
     if voice_input not in st.session_state.processed_voice_history:
         st.session_state.processed_voice_history.add(voice_input)
         current_user_prompt = voice_input
-elif text_input:
-    current_user_prompt = text_input
 elif active_image and not st.session_state.get("image_processed", False):
     current_user_prompt = "이 사진 보고 어떤 게 있는지, 식재료라면 가볍게 해먹을 수 있는 요리 추천해줘!"
 
@@ -518,21 +528,23 @@ if current_user_prompt:
         auto_detect_and_remember(current_user_prompt)
 
     with st.chat_message("assistant"):
-        with st.spinner("태민이가 확인하고 있어..."):
+        with st.spinner("태민이가 생각하고 있어..."):
             if is_briefing_cmd:
                 reply_text = create_daily_briefing()
             elif is_delete_cmd:
                 _, reply_text = direct_delete_memo(current_user_prompt)
             else:
                 now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                # 두뇌 프롬프트에 사용자의 이름 '정수'를 확고하게 고정
                 system_prompt = (
-                    f"너의 이름은 '태민'이야. 가장 친한 친구이자 든든한 개인 전담 AI 비서야. "
-                    f"존댓말 쓰지 말고, 편안하고 다정한 친구 같은 반말로 자연스럽게 답해줘. "
-                    f"음성으로 들을 때 편하도록 특수문자나 마크다운 기호는 쓰지 말고 짧고 간결하게 말해줘. "
+                    f"너의 이름은 '태민'이야. 가장 친하고 다정한 개인 전담 AI 비서야. "
+                    f"사용자의 진짜 이름은 '이정수'이며, 호칭할 때는 항상 다정하게 '정수야' 또는 '정수'라고 불러줘. "
+                    f"사용자가 음성 인식 오타로 이름이 이상하게 찍혀 들어오더라도 무시하고 상대방을 무조건 '정수'라고 불러. "
+                    f"존댓말 쓰지 말고 편안한 반말로 짧고 명확하게 대답해줘. "
+                    f"음성으로 들을 때 편하도록 특수문자나 마크다운 기호는 쓰지 마. "
                     f"현재 시간은 {now_str} (한국 표준시)야. "
-                    f"- 일정 등록/조회/삭제 요청이 오면 반드시 캘린더 도구를 사용해 정확한 일정을 확인하고 답해. "
-                    f"- 메모/할 일 저장 및 조회는 archive 도구를 사용해. "
-                    f"- 건강보조제, 상식, 일상 대화는 친절하고 명확하게 핵심만 말해줘."
+                    f"- 일정 등록/조회/삭제 요청이 오면 반드시 캘린더 도구를 사용해. "
+                    f"- 메모/할 일 저장은 archive 도구를 사용해."
                 )
 
                 if img_bytes:
