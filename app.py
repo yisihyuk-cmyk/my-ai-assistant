@@ -2,6 +2,7 @@ import streamlit as st
 import json
 import io
 import sqlite3
+import time
 from datetime import datetime
 from google import genai
 from google.genai import types
@@ -29,16 +30,15 @@ def init_db():
 
 init_db()
 
-# 2. 인증
-api_key = st.secrets.get("GEMINI_API_KEY")
+# 2. 다중 API 키 및 구글 캘린더 인증 설정
+raw_keys = st.secrets.get("GEMINI_API_KEYS") or st.secrets.get("GEMINI_API_KEY", "")
+api_keys = [k.strip() for k in raw_keys.split(",") if k.strip()]
 calendar_id = st.secrets.get("CALENDAR_ID", "primary")
 service_account_str = st.secrets.get("GCP_SERVICE_ACCOUNT_JSON")
 
-if not api_key or not service_account_str:
-    st.error("API 키 또는 서비스 계정 설정(Secrets)을 확인해주세요.")
+if not api_keys or not service_account_str:
+    st.error("API 키(GEMINI_API_KEYS) 또는 서비스 계정 설정(Secrets)을 확인해주세요.")
     st.stop()
-
-client = genai.Client(api_key=api_key)
 
 service_account_info = json.loads(service_account_str)
 creds = service_account.Credentials.from_service_account_info(
@@ -83,7 +83,7 @@ def get_calendar_events(days: int = 14) -> str:
         return f"일정 조회 실패: {str(e)}"
 
 def delete_calendar_event(query_title: str) -> str:
-    """캘린더 일정을 삭제합니다."""
+    """캘린더 일정을 검색하여 삭제합니다."""
     try:
         now = datetime.utcnow().isoformat() + 'Z'
         events_result = service.events().list(
@@ -144,7 +144,7 @@ def search_archive_notes(category: str = "", keyword: str = "") -> str:
     except Exception as e:
         return f"메모 조회 실패: {str(e)}"
 
-# 고속 직접 메모 삭제 함수 (API 미사용, 단어 매칭)
+# 고속 직접 메모 삭제 함수 (API 미사용)
 def direct_delete_memo(user_text: str):
     conn = sqlite3.connect("assistant_archive.db")
     c = conn.cursor()
@@ -182,14 +182,48 @@ def direct_delete_memo(user_text: str):
 
 tools = [add_calendar_event, get_calendar_events, delete_calendar_event, save_archive_note, search_archive_notes]
 
-# 4. 세션 상태 관리
+# 4. 키 로테이션 및 자동 폴백 실행기
+if "key_index" not in st.session_state:
+    st.session_state.key_index = 0
+
+def generate_with_key_rotation(prompt, system_prompt):
+    """키를 순환 사용하며 429 에러 발생 시 즉시 다음 키로 자동 전환"""
+    total = len(api_keys)
+    last_error = ""
+
+    for _ in range(total):
+        active_key = api_keys[st.session_state.key_index]
+        st.session_state.key_index = (st.session_state.key_index + 1) % total
+
+        try:
+            temp_client = genai.Client(api_key=active_key)
+            response = temp_client.models.generate_content(
+                model="gemini-3.6-flash",
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    tools=tools,
+                    system_instruction=system_prompt,
+                    temperature=0.1
+                )
+            )
+            return response.text if response.text else "처리를 완료했습니다."
+        except Exception as ex:
+            err_msg = str(ex)
+            last_error = err_msg
+            if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg:
+                continue  # 다음 키로 즉시 전환
+            else:
+                return f"오류가 발생했습니다: {err_msg}"
+
+    return "등록된 모든 API 키의 요청 한도가 일시 초과되었습니다. 잠시 후 다시 시도해 주세요."
+
+# 5. 메인 UI
+st.title("🤖 2int의 AI 비서 태민")
+
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "processed_voice_history" not in st.session_state:
     st.session_state.processed_voice_history = set()
-
-# 5. 메인 UI
-st.title("🤖 2int의 AI 비서 태민")
 
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
@@ -204,7 +238,6 @@ with col1:
 
 text_input = st.chat_input("일정, 할 일, 메모를 말씀해주세요...")
 
-# 음성 중복 실행 방지
 current_user_prompt = None
 if voice_input:
     if voice_input not in st.session_state.processed_voice_history:
@@ -219,6 +252,7 @@ if current_user_prompt:
     with st.chat_message("user"):
         st.write(current_user_prompt)
 
+    # 메모 삭제는 API 쿼터 절약을 위해 직접 처리
     is_delete_cmd = any(k in current_user_prompt for k in ["삭제", "지워", "취소"]) and any(k in current_user_prompt for k in ["메모", "할일", "보관"])
     
     with st.chat_message("assistant"):
@@ -231,27 +265,11 @@ if current_user_prompt:
                     f"너의 이름은 '태민'이야. 개인 전담 AI 비서야. "
                     f"음성으로 들을 때 편하도록 특수문자를 최소화하고 친절하고 간결한 대화체로 답해줘. "
                     f"현재 시간은 {now_str} (한국 표준시)야. "
-                    f"- 특정 약속/일정 등록 및 조회: 구글 캘린더 도구 사용 "
+                    f"- 특정 약속/일정 등록 및 조회, 일정 취소/삭제: 구글 캘린더 도구 사용 "
                     f"- 아이디어/메모/할 일 저장: save_archive_note 사용 "
                     f"- 메모/할 일 조회: search_archive_notes 사용"
                 )
-                try:
-                    response = client.models.generate_content(
-                        model="gemini-3.6-flash",
-                        contents=current_user_prompt,
-                        config=types.GenerateContentConfig(
-                            tools=tools,
-                            system_instruction=system_prompt,
-                            temperature=0.1
-                        )
-                    )
-                    reply_text = response.text if response.text else "처리를 완료했습니다."
-                except Exception as ex:
-                    err_str = str(ex)
-                    if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
-                        reply_text = "API 사용량 일시 제한입니다. 약 20초 뒤에 다시 시도해 주세요."
-                    else:
-                        reply_text = f"오류가 발생했습니다: {err_str}"
+                reply_text = generate_with_key_rotation(current_user_prompt, system_prompt)
 
             st.write(reply_text)
 
@@ -266,7 +284,7 @@ if current_user_prompt:
             except Exception:
                 st.session_state.messages.append({"role": "assistant", "content": reply_text})
 
-# 7. 사이드바 보관함 (대화 로직 뒤에 배치하여 새로고침 없이도 즉시 화면 반영)
+# 7. 사이드바 보관함 (즉시 반영)
 with st.sidebar:
     st.header("🗂️ 아카이브 보관함")
     conn = sqlite3.connect("assistant_archive.db")
