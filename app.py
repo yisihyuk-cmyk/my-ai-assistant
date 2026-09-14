@@ -53,10 +53,10 @@ service = build("calendar", "v3", credentials=creds)
 with st.sidebar:
     st.header("🎙️ 비서 목소리 설정")
     voice_map = {
-        "태민 (자연스러운 다국어 보이스)": "en-US-AndrewMultilingualNeural",
+        "태민 (자연스러운 다국어 보이스)": "ko-KR-HyunsuMultilingualNeural",
         "현수 (가장 자연스럽고 편안한 톤)": "ko-KR-HyunsuNeural",
         "인준 (차분하고 지적인 비서)": "ko-KR-InJoonNeural",
-        "태민 (자연스러운 다국어 보이스)": "en-US-AndrewMultilingualNeural",
+        "앤드류 (자연스러운 다국어 보이스)": "en-US-AndrewMultilingualNeural",
         "에바 (부드러운 다국어 여성 톤)": "en-US-AvaMultilingualNeural",
         "선희 (단정한 아나운서)": "ko-KR-SunHiNeural",
     }
