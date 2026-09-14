@@ -96,7 +96,7 @@ if user_input := st.chat_input("태민이에게 일정이나 할 일을 말씀�
         with st.spinner("확인 중..."):
             try:
                 response = client.models.generate_content(
-                    model="gemini-2.5-flash",
+                    model="gemini-3.6-flash",
                     contents=user_input,
                     config=types.GenerateContentConfig(
                         tools=tools,
