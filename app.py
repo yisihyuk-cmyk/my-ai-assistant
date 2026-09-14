@@ -74,7 +74,7 @@ def generate_elevenlabs_audio(text: str) -> bytes:
         )
         audio_bytes = b"".join(audio_generator)
         return audio_bytes
-    except Exception as e:
+    except Exception:
         return b""
 
 # 4. 스마트폰 푸시 알림 전송 함수 (ntfy)
@@ -134,7 +134,6 @@ def add_calendar_event(summary: str, start_iso: str, end_iso: str, description: 
 
 def get_calendar_events(days: int = 14) -> str:
     try:
-        # 오늘 시작 시점부터 넉넉하게 조회
         now = (datetime.now() - timedelta(days=1)).isoformat() + 'Z'
         events_result = service.events().list(
             calendarId=calendar_id,
@@ -275,11 +274,11 @@ def direct_delete_memo(user_text: str):
     conn.close()
     return False, "어떤 메모를 지워야 할지 못 찾겠어. 다시 말해줘!"
 
-# 6. 백그라운드 자동 메모 감지 (안전 딜레이 적용)
+# 6. 백그라운드 자동 메모 감지 (gemini-3.6-flash 사용)
 def auto_detect_and_remember(user_prompt: str):
     if len(user_prompt.strip()) < 5:
         return
-    trigger_ignore = ["브리핑", "날씨", "몇 시", "삭제", "지워", "안녕", "확인해줘", "일정"]
+    trigger_ignore = ["브리핑", "날씨", "몇 시", "삭제", "지워", "안녕", "확인해줘", "일정", "보조제", "약"]
     if any(k in user_prompt for k in trigger_ignore):
         return
 
@@ -294,7 +293,7 @@ def auto_detect_and_remember(user_prompt: str):
         active_key = api_keys[st.session_state.get("key_index", 0)]
         temp_client = genai.Client(api_key=active_key)
         res = temp_client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.6-flash",
             contents=classify_prompt
         )
         ans = res.text.strip()
@@ -308,7 +307,7 @@ def auto_detect_and_remember(user_prompt: str):
 
 custom_tools = [add_calendar_event, get_calendar_events, delete_calendar_event, save_archive_note, search_archive_notes]
 
-# 7. Gemini 로테이션 엔진 (도구 충돌 방지 및 안전 예외처리)
+# 7. Gemini 로테이션 엔진 (gemini-3.6-flash 사용)
 if "key_index" not in st.session_state:
     st.session_state.key_index = 0
 
@@ -322,7 +321,6 @@ def generate_with_key_rotation(contents, system_prompt, use_tools=True, enable_s
         try:
             temp_client = genai.Client(api_key=active_key)
             tools_payload = []
-            # 커스텀 함수 도구와 구글 검색 도구는 상호 배타적으로 처리
             if use_tools:
                 tools_payload.extend(custom_tools)
             elif enable_search:
@@ -334,7 +332,7 @@ def generate_with_key_rotation(contents, system_prompt, use_tools=True, enable_s
                 temperature=0.2
             )
             response = temp_client.models.generate_content(
-                model="gemini-2.5-flash",
+                model="gemini-3.6-flash",
                 contents=contents,
                 config=cfg
             )
@@ -382,7 +380,6 @@ def create_daily_briefing() -> str:
     system_prompt = "너는 친근하고 따뜻한 비서 태민이야. 편안한 반말로 군더더기 없이 짧고 다정하게 말해줘."
     briefing_text = generate_with_key_rotation(briefing_prompt, system_prompt, use_tools=False, enable_search=False)
     
-    # 푸시 알림 전송
     send_push_notification("☀️ 태민이의 오늘 아침 브리핑", briefing_text)
     return briefing_text
 
@@ -516,7 +513,7 @@ if current_user_prompt:
     is_briefing_cmd = any(k in current_user_prompt for k in ["브리핑", "오늘 요약", "아침 브리핑", "일정 브리핑"])
     is_delete_cmd = any(k in current_user_prompt for k in ["삭제", "지워", "취소"]) and any(k in current_user_prompt for k in ["메모", "할일", "보관"])
 
-    # 질문 처리 전 백그라운드 자동 메모 추출 (단, 메인 요청과 시간차 확보)
+    # 백그라운드 자동 메모 추출
     if not is_briefing_cmd and not is_delete_cmd:
         auto_detect_and_remember(current_user_prompt)
 
@@ -534,7 +531,8 @@ if current_user_prompt:
                     f"음성으로 들을 때 편하도록 특수문자나 마크다운 기호는 쓰지 말고 짧고 간결하게 말해줘. "
                     f"현재 시간은 {now_str} (한국 표준시)야. "
                     f"- 일정 등록/조회/삭제 요청이 오면 반드시 캘린더 도구를 사용해 정확한 일정을 확인하고 답해. "
-                    f"- 메모/할 일 저장 및 조회는 archive 도구를 사용해."
+                    f"- 메모/할 일 저장 및 조회는 archive 도구를 사용해. "
+                    f"- 건강보조제, 상식, 일상 대화는 친절하고 명확하게 핵심만 말해줘."
                 )
 
                 if img_bytes:
@@ -545,7 +543,6 @@ if current_user_prompt:
                     ]
                     reply_text = generate_with_key_rotation(contents_payload, system_prompt, use_tools=False, enable_search=False)
                 else:
-                    # 함수 도구(캘린더, 메모) 단독 활성화 (검색 충돌 원천 차단)
                     reply_text = generate_with_key_rotation(current_user_prompt, system_prompt, use_tools=True, enable_search=False)
 
             st.write(reply_text)
