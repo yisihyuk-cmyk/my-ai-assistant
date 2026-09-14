@@ -49,19 +49,34 @@ creds = service_account.Credentials.from_service_account_info(
 )
 service = build("calendar", "v3", credentials=creds)
 
-# 3. 사이드바 설정 (목소리 선택 및 아카이브)
+# 3. Microsoft Edge-TTS 음성 변환 함수
+async def generate_edge_tts_audio(text: str, voice: str) -> bytes:
+    communicate = edge_tts.Communicate(text, voice)
+    audio_data = b""
+    async for chunk in communicate.stream():
+        if chunk["type"] == "audio":
+            audio_data += chunk["data"]
+    return audio_data
+
+# 4. 사이드바 설정 (목소리 선택, 샘플 미리듣기, 아카이브)
 with st.sidebar:
     st.header("🎙️ 비서 목소리 설정")
     voice_map = {
-        "태민 (자연스러운 다국어 보이스)": "ko-KR-HyunsuMultilingualNeural",
         "현수 (가장 자연스럽고 편안한 톤)": "ko-KR-HyunsuNeural",
-        "인준 (차분하고 지적인 비서)": "ko-KR-InJoonNeural",
-        "앤드류 (자연스러운 다국어 보이스)": "en-US-AndrewMultilingualNeural",
-        "에바 (부드러운 다국어 여성 톤)": "en-US-AvaMultilingualNeural",
-        "선희 (단정한 아나운서)": "ko-KR-SunHiNeural",
+        "인준 (차분하고 지적인 남성 톤)": "ko-KR-InJoonNeural",
+        "선희 (단정한 여성 아나운서)": "ko-KR-SunHiNeural",
+        "서현 (부드럽고 차분한 여성)": "ko-KR-SeoHyeonNeural",
+        "지민 (밝고 친근한 여성)": "ko-KR-JiMinNeural",
+        "봉진 (중후한 남성 톤)": "ko-KR-BongJinNeural",
+        "앤드루 (자연스러운 다국어 모델)": "en-US-AndrewMultilingualNeural"
     }
     selected_voice_label = st.selectbox("원하는 목소리를 고르세요", list(voice_map.keys()), index=0)
     current_voice = voice_map[selected_voice_label]
+
+    if st.button("🔊 선택한 목소리 샘플 듣기", use_container_width=True):
+        sample_text = "안녕! 난 네 전담 비서 태민이야. 오늘 하루도 내가 든든하게 챙겨줄게."
+        sample_audio = asyncio.run(generate_edge_tts_audio(sample_text, voice=current_voice))
+        st.audio(sample_audio, format="audio/mp3", autoplay=True)
 
     st.write("---")
     st.header("🗂️ 아카이브 보관함")
@@ -87,7 +102,7 @@ with st.sidebar:
     else:
         st.caption("저장된 메모나 아이디어가 없습니다.")
 
-# 4. 비서 도구 및 브리핑 수집 함수들
+# 5. 비서 도구 및 정보 수집 함수들
 def get_current_weather(lat: float = 37.3219, lon: float = 126.8309) -> str:
     try:
         url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=Asia%2FSeoul"
@@ -107,9 +122,9 @@ def get_current_weather(lat: float = 37.3219, lon: float = 126.8309) -> str:
         elif w_code in [51, 53, 55, 61, 63, 65, 80, 81, 82]: desc = "비"
         elif w_code in [71, 73, 75, 85, 86]: desc = "눈"
 
-        return f"현재 날씨는 {desc}이며, 기온 {temp}도, 오늘 최저 {min_temp}도 / 최고 {max_temp}도, 강수 확률은 {pop}%입니다."
+        return f"{desc}, 현재 기온 {temp}도(최저 {min_temp}도 / 최고 {max_temp}도), 강수확률 {pop}%"
     except Exception:
-        return "날씨 정보를 가져오지 못했습니다."
+        return "날씨 정보 확인 불가"
 
 def add_calendar_event(summary: str, start_iso: str, end_iso: str, description: str = "") -> str:
     try:
@@ -136,7 +151,7 @@ def get_calendar_events(days: int = 14) -> str:
         ).execute()
         events = events_result.get('items', [])
         if not events:
-            return "예정된 일정이 없습니다."
+            return "예정된 일정 없음"
         
         res = [f"- {e.get('summary', '제목 없음')} ({e['start'].get('dateTime', e['start'].get('date'))})" for e in events]
         return "\n".join(res)
@@ -157,16 +172,16 @@ def get_today_calendar_events_str() -> str:
         ).execute()
         events = events_result.get('items', [])
         if not events:
-            return "오늘 예정된 캘린더 일정은 없습니다."
+            return "오늘 잡힌 일정 없음"
         
         res = []
         for e in events:
             start_raw = e['start'].get('dateTime', e['start'].get('date'))
             time_part = start_raw.split("T")[1][:5] if "T" in start_raw else "종일"
-            res.append(f"- {time_part} : {e.get('summary')}")
-        return "\n".join(res)
+            res.append(f"{time_part} {e.get('summary')}")
+        return ", ".join(res)
     except Exception:
-        return "캘린더 일정을 확인하지 못했습니다."
+        return "일정 확인 불가"
 
 def delete_calendar_event(query_title: str) -> str:
     try:
@@ -180,11 +195,11 @@ def delete_calendar_event(query_title: str) -> str:
         ).execute()
         events = events_result.get('items', [])
         if not events:
-            return f"'{query_title}' 관련 캘린더 일정을 찾지 못했습니다."
+            return f"'{query_title}' 관련 일정을 찾지 못했어."
         
         target = events[0]
         service.events().delete(calendarId=calendar_id, eventId=target['id']).execute()
-        return f"캘린더 일정 삭제 완료: '{target.get('summary')}' 일정을 삭제했습니다."
+        return f"'{target.get('summary')}' 일정 캘린더에서 깔끔하게 삭제했어!"
     except Exception as e:
         return f"일정 삭제 실패: {str(e)}"
 
@@ -197,7 +212,7 @@ def save_archive_note(content: str, category: str = "일반메모") -> str:
                   (category, content, now_time))
         conn.commit()
         conn.close()
-        return f"[{category}] 저장 완료: '{content}'"
+        return f"보관 완료: [{category}] {content}"
     except Exception as e:
         return f"메모 저장 실패: {str(e)}"
 
@@ -220,7 +235,7 @@ def search_archive_notes(category: str = "", keyword: str = "") -> str:
         conn.close()
         
         if not rows:
-            return "해당하는 메모나 기록이 없습니다."
+            return "저장된 기록이 없어."
         
         res = [f"- [{row[1]} | {row[3]}] {row[2]}" for row in rows]
         return "\n".join(res)
@@ -235,7 +250,7 @@ def direct_delete_memo(user_text: str):
     
     if not all_notes:
         conn.close()
-        return False, "현재 보관함에 저장된 메모가 없습니다."
+        return False, "보관함에 저장된 메모가 없어."
     
     stop_words = ["삭제", "지워", "취소", "해줘", "관련", "해서", "메모", "항목", "에서", "좀", "해", "등록", "알려줘"]
     words = [w.strip() for w in user_text.split() if len(w.strip()) > 1 and not any(sw in w for sw in stop_words)]
@@ -257,24 +272,14 @@ def direct_delete_memo(user_text: str):
         c.execute("DELETE FROM archives WHERE id = ?", (note_id,))
         conn.commit()
         conn.close()
-        return True, f"'{content}' 메모를 보관함에서 삭제했습니다."
+        return True, f"'{content}' 메모 보관함에서 지웠어!"
     
     conn.close()
-    return False, "삭제할 해당하는 메모를 찾지 못했습니다."
+    return False, "어떤 메모를 지워야 할지 못 찾겠어. 다시 말해줘!"
 
-# 비서 커스텀 도구 목록 (캘린더 + 아카이브)
 custom_tools = [add_calendar_event, get_calendar_events, delete_calendar_event, save_archive_note, search_archive_notes]
 
-# 5. Microsoft Edge-TTS 음성 변환 함수
-async def generate_edge_tts_audio(text: str, voice: str) -> bytes:
-    communicate = edge_tts.Communicate(text, voice)
-    audio_data = b""
-    async for chunk in communicate.stream():
-        if chunk["type"] == "audio":
-            audio_data += chunk["data"]
-    return audio_data
-
-# 6. Gemini 다중 키 로테이션 실행기 (텍스트 + 멀티모달 이미지 + 검색 지원)
+# 6. Gemini API 키 로테이션 실행 함수
 if "key_index" not in st.session_state:
     st.session_state.key_index = 0
 
@@ -304,58 +309,52 @@ def generate_with_key_rotation(contents, system_prompt, use_tools=True, enable_s
                 contents=contents,
                 config=cfg
             )
-            return response.text if response.text else "처리를 완료했습니다."
+            return response.text if response.text else "처리를 완료했어."
         except Exception as ex:
             err_msg = str(ex)
             last_error = err_msg
             if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg:
                 continue
             else:
-                return f"오류가 발생했습니다: {err_msg}"
+                return f"오류가 생겼어: {err_msg}"
 
-    return "등록된 모든 API 키의 요청 한도가 일시 초과되었습니다. 잠시 후 다시 시도해 주세요."
+    return "모든 API 키의 사용량이 일시적으로 찼어. 잠시만 이따가 다시 불러줘!"
 
-# 7. 데일리 브리핑
+# 7. 초고속 데일리 브리핑 (친근하고 다정한 반말 & 딱 3~4문장 요약)
 def create_daily_briefing() -> str:
     weather_info = get_current_weather()
     today_events = get_today_calendar_events_str()
     
     conn = sqlite3.connect("assistant_archive.db")
     c = conn.cursor()
-    c.execute("SELECT content FROM archives WHERE category LIKE '%할일%' OR category LIKE '%할 일%' ORDER BY id DESC LIMIT 5")
+    c.execute("SELECT content FROM archives WHERE category LIKE '%할일%' OR category LIKE '%할 일%' ORDER BY id DESC LIMIT 3")
     todos = [r[0] for r in c.fetchall()]
     conn.close()
-    todo_str = "\n".join([f"- {t}" for t in todos]) if todos else "등록된 주요 할 일이 없습니다."
+    todo_str = ", ".join(todos) if todos else "남은 주요 할 일 없음"
     
     now_dt = datetime.now()
     weekdays = ["월", "화", "수", "목", "금", "토", "일"]
-    date_header = f"{now_dt.year}년 {now_dt.month}월 {now_dt.day}일 {weekdays[now_dt.weekday()]}요일"
+    date_header = f"{now_dt.month}월 {now_dt.day}일 {weekdays[now_dt.weekday()]}요일"
 
     briefing_prompt = f"""
-다음 정보들을 바탕으로 개인 전담 비서 '태민'이로서 사용자에게 들려줄 아침 데일리 브리핑 대본을 작성해줘.
-음성으로 들었을 때 편안하고 활기차며, 특수문자나 마크다운 기호 없이 자연스러운 존댓말 대화체여야 해.
+너는 가장 친한 친구이자 든든한 전담 비서 '태민'이야.
+아래 정보를 보고 음성으로 빠르게 들을 수 있게 [친근하고 다정한 반말]로 딱 3~4문장 이내로 핵심만 요약 브리핑해줘.
+절대 길게 쓰지 말고, 특수문자나 마크다운 기호 없이 자연스럽게 이어지는 대화체여야 해.
 
-[기본 정보]
-- 오늘 날짜: {date_header}
-- 오늘 날씨: {weather_info}
-- 오늘의 구글 캘린더 일정:
-{today_events}
-- 보관된 할 일:
-{todo_str}
-- 일일 건강 루틴:
-아침 식후 약 및 저녁 식후 약 복용 챙기기
+- 오늘: {date_header}
+- 날씨: {weather_info}
+- 오늘 캘린더 일정: {today_events}
+- 남은 할 일: {todo_str}
 
-[작성 가이드]
-1. 따뜻한 아침 인사와 날짜 소개
-2. 오늘 날씨 안내 (기온 및 옷차림/우산 조언)
-3. 캘린더 일정 및 할 일 요약
-4. [건강 루틴 챙김]: 아침 식사 후 잊지 말고 아침 약 꼭 챙겨 드시고, 저녁 약 복용도 잊지 마시라는 다정하고 세심한 조언 포함
-5. 기분 좋은 하루를 응원하는 마무리 인사
+[필수 구성: 딱 3~4문장]
+1. 다정한 아침 인사와 오늘 날씨/옷차림 팁
+2. 오늘 잡힌 주요 일정과 할 일 짧게 짚어주기
+3. 아침 식사 후 약 챙겨 먹고 저녁 약도 잊지 말라는 건강 당부와 활기찬 응원
 """
-    system_prompt = "너는 친절하고 똑똑한 전담 비서 '태민'이야. 듣기 편안한 라디오 아침 방송처럼 다정하게 말해줘."
+    system_prompt = "너는 친근하고 따뜻한 비서 태민이야. 편안한 반말로 군더더기 없이 짧고 다정하게 말해줘."
     return generate_with_key_rotation(briefing_prompt, system_prompt, use_tools=False, enable_search=False)
 
-# 8. 메인 UI 구성
+# 8. 메인 UI
 st.title("🤖 2int의 AI 비서 태민")
 
 if "messages" not in st.session_state:
@@ -363,14 +362,14 @@ if "messages" not in st.session_state:
 if "processed_voice_history" not in st.session_state:
     st.session_state.processed_voice_history = set()
 
-# 상단 브리핑 버튼
+# 상단 빠른 브리핑 버튼
 col_b1, col_b2 = st.columns([2, 5])
 trigger_briefing = False
 with col_b1:
     if st.button("☀️ 오늘의 데일리 브리핑 듣기", use_container_width=True):
         trigger_briefing = True
 
-# 대화 히스토리 출력
+# 대화 내용 출력
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.write(msg["content"])
@@ -381,11 +380,11 @@ for msg in st.session_state.messages:
 
 st.write("---")
 
-# 📸 멀티모달 카메라/사진 입력 (접이식 UI로 깔끔하게 배치)
+# 📷 카메라 / 사진 업로드
 with st.expander("📷 카메라로 사진 찍기 또는 이미지 업로드", expanded=False):
     tab_cam, tab_file = st.tabs(["📸 스마트폰 즉석 촬영", "🖼️ 갤러리 사진 선택"])
     with tab_cam:
-        camera_img = st.camera_input("카메라로 식재료, 약 봉투, 서류 등을 찍어보세요")
+        camera_img = st.camera_input("냉장고, 영수증, 서류, 약 봉투 등을 찍어봐")
     with tab_file:
         file_img = st.file_uploader("사진 파일 선택", type=["jpg", "jpeg", "png"])
 
@@ -396,7 +395,7 @@ col1, col2 = st.columns([1, 4])
 with col1:
     voice_input = speech_to_text(language="ko", start_prompt="🎤 말하기", stop_prompt="⏹️ 녹음 완료", key="mic_btn")
 
-text_input = st.chat_input("일정, 질문, 냉장고 추천 등 무엇이든 말씀해주세요...")
+text_input = st.chat_input("일정, 질문, 냉장고 추천 등 무엇이든 편하게 말해줘...")
 
 current_user_prompt = None
 if trigger_briefing:
@@ -408,10 +407,9 @@ elif voice_input:
 elif text_input:
     current_user_prompt = text_input
 elif active_image and not st.session_state.get("image_processed", False):
-    # 사진만 올리고 말을 안 했을 때 기본 질문 부여
-    current_user_prompt = "이 사진을 보고 무엇이 있는지, 식재료라면 추천 메뉴나 활용법을 친절하게 알려줘."
+    current_user_prompt = "이 사진 보고 어떤 게 있는지, 식재료라면 가볍게 해먹을 수 있는 요리 추천해줘!"
 
-# 9. 요청 처리 및 응답
+# 9. 요청 처리 및 음성 출력
 if current_user_prompt:
     user_msg_entry = {"role": "user", "content": current_user_prompt}
     img_bytes = None
@@ -428,13 +426,11 @@ if current_user_prompt:
         if img_bytes:
             st.image(img_bytes, width=260)
 
-    # 1) 브리핑 여부
     is_briefing_cmd = any(k in current_user_prompt for k in ["브리핑", "오늘 요약", "아침 브리핑", "일정 브리핑"])
-    # 2) 로컬 직접 메모 삭제 여부
     is_delete_cmd = any(k in current_user_prompt for k in ["삭제", "지워", "취소"]) and any(k in current_user_prompt for k in ["메모", "할일", "보관"])
 
     with st.chat_message("assistant"):
-        with st.spinner("태민이가 확인하고 있습니다..."):
+        with st.spinner("태민이가 확인하고 있어..."):
             if is_briefing_cmd:
                 reply_text = create_daily_briefing()
             elif is_delete_cmd:
@@ -442,28 +438,24 @@ if current_user_prompt:
             else:
                 now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 system_prompt = (
-                    f"너의 이름은 '태민'이야. 든든하고 똑똑한 개인 전담 AI 비서야. "
-                    f"사용자가 '태민아'라고 부르면 비서답게 친절하고 자연스럽게 화답해줘. "
-                    f"음성으로 들을 때 편하도록 특수문자나 마크다운 기호를 최소화하고 정중하고 다정한 대화체로 답해줘. "
+                    f"너의 이름은 '태민'이야. 가장 친한 친구이자 든든한 개인 전담 AI 비서야. "
+                    f"존댓말 쓰지 말고, 편안하고 다정한 친구 같은 반말로 자연스럽게 답해줘. "
+                    f"음성으로 들을 때 편하도록 특수문자나 마크다운 기호는 쓰지 말고 짧고 간결하게 말해줘. "
                     f"현재 시간은 {now_str} (한국 표준시)야. "
-                    f"- 특정 약속/일정 등록 및 조회, 취소/삭제: 구글 캘린더 도구 사용 "
-                    f"- 아이디어/메모/할 일 저장: save_archive_note 사용 "
-                    f"- 메모/할 일 조회: search_archive_notes 사용 "
-                    f"- 최신 뉴스, 실시간 검색, 추천 맛집 등 외부 정보: 구글 검색 도구 활용 "
-                    f"- 사진(이미지)이 주어지면: 식재료 식별 및 부담 없는 건강 레시피 제안, 유통기한/문서 핵심 요약 등을 세심하게 분석"
+                    f"- 일정 등록/조회/삭제: 구글 캘린더 도구 사용 "
+                    f"- 메모/할 일 저장 및 조회: archive 도구 사용 "
+                    f"- 최신 뉴스, 실시간 검색, 외부 정보: 구글 검색 도구 활용 "
+                    f"- 사진이 주어지면: 식재료 분석 및 가벼운 메뉴 추천, 문서 핵심 요약 등을 세심하게 분석"
                 )
 
-                # 요청 컨텐츠 구성 (멀티모달 이미지 포함 여부)
                 if img_bytes:
                     mime_type = "image/png" if getattr(active_image, "type", "") == "image/png" else "image/jpeg"
                     contents_payload = [
                         types.Part.from_bytes(data=img_bytes, mime_type=mime_type),
                         current_user_prompt
                     ]
-                    # 이미지 분석 시에는 커스텀 툴 대신 시각 이해와 웹 검색에 집중
                     reply_text = generate_with_key_rotation(contents_payload, system_prompt, use_tools=False, enable_search=True)
                 else:
-                    # 일반 텍스트/음성 질문: 캘린더 도구 + 구글 실시간 검색 동시 활성화
                     reply_text = generate_with_key_rotation(current_user_prompt, system_prompt, use_tools=True, enable_search=True)
 
             st.write(reply_text)
