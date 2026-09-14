@@ -474,10 +474,17 @@ for msg in st.session_state.messages:
 st.write("---")
 
 # 📷 카메라 / 사진 업로드
-with st.expander("📷 카메라로 사진 찍기 또는 이미지 업로드", expanded=False):
+# 📷 카메라 / 사진 업로드 (배터리 보호 최적화)
+camera_img = None
+file_img = None
+
+with st.expander("📷 사진 촬영 또는 이미지 업로드", expanded=False):
     tab_cam, tab_file = st.tabs(["📸 스마트폰 즉석 촬영", "🖼️ 갤러리 사진 선택"])
     with tab_cam:
-        camera_img = st.camera_input("냉장고, 영수증, 서류, 약 봉투 등을 찍어봐")
+        # 평소에는 카메라 센서를 꺼두고, 버튼을 켤 때만 브라우저 마운트
+        use_camera = st.checkbox("카메라 켜기", key="camera_toggle")
+        if use_camera:
+            camera_img = st.camera_input("냉장고, 영수증, 서류, 약 봉투 등을 찍어봐")
     with tab_file:
         file_img = st.file_uploader("사진 파일 선택", type=["jpg", "jpeg", "png"])
 
