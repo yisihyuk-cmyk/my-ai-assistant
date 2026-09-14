@@ -352,7 +352,12 @@ def create_daily_briefing() -> str:
     return generate_with_key_rotation(briefing_prompt, system_prompt, use_tools=False, enable_search=False)
 
 # 8. 메인 UI
-st.title("🤖 2int의 AI 비서 태민")
+# 기존의 st.title("🤖 2int의 AI 비서 태민") 대신 아래 코드로 교체
+col_icon, col_title = st.columns([1, 8], vertical_alignment="center")
+with col_icon:
+    st.image("profile.jpg", width=85)  # 업로드한 파일명
+with col_title:
+    st.title("2int의 AI친구 태민")
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
