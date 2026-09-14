@@ -2,7 +2,6 @@ import streamlit as st
 import json
 import io
 import sqlite3
-import time
 from datetime import datetime
 from google import genai
 from google.genai import types
@@ -183,7 +182,7 @@ def direct_delete_memo(user_text: str):
 
 tools = [add_calendar_event, get_calendar_events, delete_calendar_event, save_archive_note, search_archive_notes]
 
-# 4. 세션 상태 관리 (중복 호출 차단용)
+# 4. 세션 상태 관리
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "processed_voice_history" not in st.session_state:
@@ -205,10 +204,9 @@ with col1:
 
 text_input = st.chat_input("일정, 할 일, 메모를 말씀해주세요...")
 
-# 사용자 입력 선별 (음성이 들어왔을 때 이전에 처리했던 음성이면 무시!)
+# 음성 중복 실행 방지
 current_user_prompt = None
 if voice_input:
-    # 타임스탬프 기반이 아닌 내용 기반 단발 처리
     if voice_input not in st.session_state.processed_voice_history:
         st.session_state.processed_voice_history.add(voice_input)
         current_user_prompt = voice_input
@@ -221,7 +219,6 @@ if current_user_prompt:
     with st.chat_message("user"):
         st.write(current_user_prompt)
 
-    # 메모 삭제 요청인지 확인
     is_delete_cmd = any(k in current_user_prompt for k in ["삭제", "지워", "취소"]) and any(k in current_user_prompt for k in ["메모", "할일", "보관"])
     
     with st.chat_message("assistant"):
@@ -269,7 +266,7 @@ if current_user_prompt:
             except Exception:
                 st.session_state.messages.append({"role": "assistant", "content": reply_text})
 
-# 7. 사이드바 보관함 (대화 처리 로직보다 "뒤"에 배치하여 st.rerun 없이도 즉시 최신 내용 반영)
+# 7. 사이드바 보관함 (대화 로직 뒤에 배치하여 새로고침 없이도 즉시 화면 반영)
 with st.sidebar:
     st.header("🗂️ 아카이브 보관함")
     conn = sqlite3.connect("assistant_archive.db")
