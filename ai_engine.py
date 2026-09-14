@@ -14,11 +14,7 @@ custom_tools = [
     services.save_archive_note
 ]
 
-if "key_index" not in st.session_state:
-    st.session_state.key_index = 0
-
 def generate_with_key_rotation(contents, system_prompt, use_tools=True):
-    # 세션 상태 안전 초기화
     if "key_index" not in st.session_state:
         st.session_state.key_index = 0
 
@@ -49,16 +45,18 @@ def generate_with_key_rotation(contents, system_prompt, use_tools=True):
     return f"API 연결 지연: {last_err}"
 
 def auto_detect_and_remember(user_prompt: str):
-    if len(user_prompt.strip()) < 5: return
-    if any(k in user_prompt for k in ["브리핑", "날씨", "몇 시", "삭제", "안녕", "확인해줘", "일정"]): return
+    if len(user_prompt.strip()) < 5:
+        return
+    if any(k in user_prompt for k in ["브리핑", "날씨", "몇 시", "삭제", "안녕", "확인해줘", "일정"]):
+        return
 
     prompt = f"""사용자 발화에서 기억할 할일, 장보기, 창작 영감이 있으면 JSON으로 응답해.
 없으면 NONE.
-카테고리: ["할일", "영감창작", "일상기록"]
+카테고리는 반드시 ["할일", "영감창작", "일상기록"] 중 하나로 지정해.
 {{"should_save": true, "category": "할일 또는 영감창작 또는 일상기록", "summary": "내용"}}
 발화: "{user_prompt}" """
 
-   try:
+    try:
         current_idx = st.session_state.get("key_index", 0)
         client = genai.Client(api_key=API_KEYS[current_idx])
         res = client.models.generate_content(model="gemini-3.6-flash", contents=prompt)
@@ -67,7 +65,8 @@ def auto_detect_and_remember(user_prompt: str):
             data = json.loads(ans[ans.find("{"):ans.rfind("}")+1])
             if data.get("should_save"):
                 services.save_archive_note(data.get("summary"), data.get("category", "일상기록"))
-    except Exception: pass
+    except Exception:
+        pass
 
 def get_briefing(is_morning: bool = True) -> str:
     if is_morning:
