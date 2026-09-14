@@ -355,7 +355,7 @@ def create_daily_briefing() -> str:
 # 기존의 st.title("🤖 2int의 AI 비서 태민") 대신 아래 코드로 교체
 col_icon, col_title = st.columns([1, 8], vertical_alignment="center")
 with col_icon:
-    st.image("profile.jpg", width=85)  # 업로드한 파일명
+    st.image("profile.jpg", width=65)  # 업로드한 파일명
 with col_title:
     st.title("2int의 AI친구 태민")
 
