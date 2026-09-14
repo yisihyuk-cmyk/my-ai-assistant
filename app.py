@@ -39,9 +39,10 @@ api_keys = [k.strip() for k in raw_keys.split(",") if k.strip()]
 calendar_id = st.secrets.get("CALENDAR_ID", "primary")
 service_account_str = st.secrets.get("GCP_SERVICE_ACCOUNT_JSON")
 
-# ElevenLabs 설정
+# ElevenLabs & 알림 설정
 eleven_api_key = st.secrets.get("ELEVENLABS_API_KEY", "")
 eleven_voice_id = st.secrets.get("ELEVENLABS_VOICE_ID", "gDx7aX4UOQMthJevd64d")
+ntfy_topic = st.secrets.get("NTFY_TOPIC", "")
 
 if not api_keys or not service_account_str:
     st.error("API 키(GEMINI_API_KEYS) 또는 서비스 계정 설정을 확인해주세요.")
@@ -77,34 +78,23 @@ def generate_elevenlabs_audio(text: str) -> bytes:
         st.error(f"음성 생성 실패: {str(e)}")
         return b""
 
-# 4. 사이드바 설정 (음성 상태 안내 및 아카이브)
-with st.sidebar:
-    st.header("🎙️ 비서 목소리")
-    st.success("✨ 맞춤 복제 보이스(태민) 연결됨")
-
-    st.write("---")
-    st.header("🗂️ 아카이브 보관함")
-    conn = sqlite3.connect("assistant_archive.db")
-    c = conn.cursor()
-    c.execute("SELECT id, category, content, created_at FROM archives ORDER BY id DESC LIMIT 20")
-    recent_notes = c.fetchall()
-    conn.close()
-    
-    if recent_notes:
-        for note_id, cat, content, date_str in recent_notes:
-            with st.expander(f"[{cat}] {content[:10]}... ({date_str})"):
-                st.write(f"**카테고리:** {cat}")
-                st.write(f"**내용:** {content}")
-                st.caption(f"기록 시간: {date_str}")
-                if st.button("🗑️ 즉시 삭제", key=f"sidebar_del_{note_id}"):
-                    conn = sqlite3.connect("assistant_archive.db")
-                    c = conn.cursor()
-                    c.execute("DELETE FROM archives WHERE id = ?", (note_id,))
-                    conn.commit()
-                    conn.close()
-                    st.toast("삭제되었습니다!")
-    else:
-        st.caption("저장된 메모나 아이디어가 없습니다.")
+# 4. 스마트폰 푸시 알림 전송 함수 (ntfy)
+def send_push_notification(title: str, message: str):
+    if not ntfy_topic:
+        return
+    try:
+        requests.post(
+            f"https://ntfy.sh/{ntfy_topic}",
+            data=message.encode("utf-8"),
+            headers={
+                "Title": title.encode("utf-8").decode("latin-1"),
+                "Priority": "high",
+                "Tags": "robot,speaking_head"
+            },
+            timeout=5
+        )
+    except Exception:
+        pass
 
 # 5. 비서 도구 함수들
 def get_current_weather(lat: float = 37.3219, lon: float = 126.8309) -> str:
@@ -281,9 +271,40 @@ def direct_delete_memo(user_text: str):
     conn.close()
     return False, "어떤 메모를 지워야 할지 못 찾겠어. 다시 말해줘!"
 
+# 6. 대화 속 자동 기억 분석기 (대화 메모 고도화)
+def auto_detect_and_remember(user_prompt: str):
+    if len(user_prompt.strip()) < 5:
+        return
+    trigger_ignore = ["브리핑", "날씨", "몇 시", "삭제", "지워", "안녕"]
+    if any(k in user_prompt for k in trigger_ignore):
+        return
+
+    classify_prompt = f"""
+사용자의 말에서 기억해둘 만한 [할 일, 약속, 장보기, 창작 아이디어, 영감, 건강/기억할 일상]이 있는지 판단해줘.
+사용자 발화: "{user_prompt}"
+
+기억할 가치가 있다면 반드시 아래 형식의 JSON으로만 답해. 기억할 가치가 없다면 NONE 이라고만 답해.
+{{"should_save": true, "category": "할일 또는 아이디어 또는 일상기록", "summary": "간결하게 정리된 핵심 내용"}}
+"""
+    try:
+        active_key = api_keys[st.session_state.get("key_index", 0)]
+        temp_client = genai.Client(api_key=active_key)
+        res = temp_client.models.generate_content(
+            model="gemini-3.6-flash",
+            contents=classify_prompt
+        )
+        ans = res.text.strip()
+        if "{" in ans and "should_save" in ans:
+            clean_json = ans[ans.find("{"):ans.rfind("}")+1]
+            data = json.loads(clean_json)
+            if data.get("should_save"):
+                save_archive_note(data.get("summary"), data.get("category", "일상기록"))
+    except Exception:
+        pass
+
 custom_tools = [add_calendar_event, get_calendar_events, delete_calendar_event, save_archive_note, search_archive_notes]
 
-# 6. Gemini 로테이션
+# 7. Gemini 로테이션
 if "key_index" not in st.session_state:
     st.session_state.key_index = 0
 
@@ -319,17 +340,17 @@ def generate_with_key_rotation(contents, system_prompt, use_tools=True, enable_s
 
     return "API 사용량이 일시적으로 찼어. 잠시만 이따가 다시 불러줘!"
 
-# 7. 초고속 데일리 브리핑 (친근한 반말 & 3~4문장 요약)
+# 8. 초고속 데일리 브리핑 (맥락 기억 + 푸시 발송)
 def create_daily_briefing() -> str:
     weather_info = get_current_weather()
     today_events = get_today_calendar_events_str()
     
     conn = sqlite3.connect("assistant_archive.db")
     c = conn.cursor()
-    c.execute("SELECT content FROM archives WHERE category LIKE '%할일%' OR category LIKE '%할 일%' ORDER BY id DESC LIMIT 3")
-    todos = [r[0] for r in c.fetchall()]
+    c.execute("SELECT category, content FROM archives ORDER BY id DESC LIMIT 5")
+    recent_memories = [f"[{r[0]}] {r[1]}" for r in c.fetchall()]
     conn.close()
-    todo_str = ", ".join(todos) if todos else "남은 주요 할 일 없음"
+    recent_mem_str = ", ".join(recent_memories) if recent_memories else "남은 주요 할 일 없음"
     
     now_dt = datetime.now()
     weekdays = ["월", "화", "수", "목", "금", "토", "일"]
@@ -343,17 +364,56 @@ def create_daily_briefing() -> str:
 - 오늘: {date_header}
 - 날씨: {weather_info}
 - 오늘 캘린더 일정: {today_events}
-- 남은 할 일: {todo_str}
+- 최근 메모/할 일/단상: {recent_mem_str}
 
 [필수 구성: 딱 3~4문장]
 1. 다정한 아침 인사와 오늘 날씨/옷차림 팁
-2. 오늘 잡힌 주요 일정과 할 일 짧게 짚어주기
+2. 오늘 잡힌 주요 일정과 최근 남겨둔 생각/할 일 짧게 짚어주기
 3. 아침 식사 후 약 챙겨 먹고 저녁 약도 잊지 말라는 건강 당부와 활기찬 응원
 """
     system_prompt = "너는 친근하고 따뜻한 비서 태민이야. 편안한 반말로 군더더기 없이 짧고 다정하게 말해줘."
-    return generate_with_key_rotation(briefing_prompt, system_prompt, use_tools=False, enable_search=False)
+    briefing_text = generate_with_key_rotation(briefing_prompt, system_prompt, use_tools=False, enable_search=False)
+    
+    # 스마트폰 팝업 푸시 발송
+    send_push_notification("☀️ 태민이의 오늘 아침 브리핑", briefing_text)
+    
+    return briefing_text
 
-# 8. 모바일 반응형 헤더 (사진과 타이틀 밀착)
+# 9. 사이드바 설정 (음성 안내, 푸시 테스트, 아카이브)
+with st.sidebar:
+    st.header("🎙️ 비서 목소리")
+    st.success("✨ 맞춤 복제 보이스(태민) 연결됨")
+
+    if ntfy_topic:
+        if st.button("📲 스마트폰 알림 테스트 전송", use_container_width=True):
+            send_push_notification("태민이 알림 테스트", "안녕! 알림 채널 정상 연결됐어. 언제든 필요할 때 말 걸어줘!")
+            st.toast("스마트폰으로 알림을 보냈어!")
+
+    st.write("---")
+    st.header("🗂️ 아카이브 보관함")
+    conn = sqlite3.connect("assistant_archive.db")
+    c = conn.cursor()
+    c.execute("SELECT id, category, content, created_at FROM archives ORDER BY id DESC LIMIT 20")
+    recent_notes = c.fetchall()
+    conn.close()
+    
+    if recent_notes:
+        for note_id, cat, content, date_str in recent_notes:
+            with st.expander(f"[{cat}] {content[:10]}... ({date_str})"):
+                st.write(f"**카테고리:** {cat}")
+                st.write(f"**내용:** {content}")
+                st.caption(f"기록 시간: {date_str}")
+                if st.button("🗑️ 즉시 삭제", key=f"sidebar_del_{note_id}"):
+                    conn = sqlite3.connect("assistant_archive.db")
+                    c = conn.cursor()
+                    c.execute("DELETE FROM archives WHERE id = ?", (note_id,))
+                    conn.commit()
+                    conn.close()
+                    st.toast("삭제되었습니다!")
+    else:
+        st.caption("저장된 메모나 아이디어가 없습니다.")
+
+# 10. 모바일 반응형 헤더
 def get_image_base64(path):
     if os.path.exists(path):
         with open(path, "rb") as f:
@@ -434,7 +494,7 @@ elif text_input:
 elif active_image and not st.session_state.get("image_processed", False):
     current_user_prompt = "이 사진 보고 어떤 게 있는지, 식재료라면 가볍게 해먹을 수 있는 요리 추천해줘!"
 
-# 9. 요청 처리 및 ElevenLabs 음성 출력
+# 11. 요청 처리 및 ElevenLabs 음성 출력
 if current_user_prompt:
     user_msg_entry = {"role": "user", "content": current_user_prompt}
     img_bytes = None
@@ -453,6 +513,10 @@ if current_user_prompt:
 
     is_briefing_cmd = any(k in current_user_prompt for k in ["브리핑", "오늘 요약", "아침 브리핑", "일정 브리핑"])
     is_delete_cmd = any(k in current_user_prompt for k in ["삭제", "지워", "취소"]) and any(k in current_user_prompt for k in ["메모", "할일", "보관"])
+
+    # 백그라운드 대화 메모 자동 추출 동작
+    if not is_briefing_cmd and not is_delete_cmd:
+        auto_detect_and_remember(current_user_prompt)
 
     with st.chat_message("assistant"):
         with st.spinner("태민이가 목소리로 준비하고 있어..."):
