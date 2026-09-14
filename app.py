@@ -53,10 +53,10 @@ service = build("calendar", "v3", credentials=creds)
 with st.sidebar:
     st.header("🎙️ 비서 목소리 설정")
     voice_map = {
-        "인준 (차분한 남성 비서)": "ko-KR-InJoonNeural",
+        "두준 (차분한 남성 비서)": "ko-KR-InJoonNeural",
         "선희 (단정한 여성 아나운서)": "ko-KR-SunHiNeural",
-        "현수 (다정하고 자연스러운 청년)": "ko-KR-HyunsuNeural",
-        "봉진 (신뢰감 있는 중후한 남성)": "ko-KR-BongJinNeural",
+        "태민 (다정하고 자연스러운 청년)": "ko-KR-HyunsuNeural",
+        "동원 (신뢰감 있는 중후한 남성)": "ko-KR-BongJinNeural",
         "지민 (밝고 친근한 여성)": "ko-KR-JiMinNeural",
         "서현 (부드럽고 편안한 여성)": "ko-KR-SeoHyeonNeural",
     }
