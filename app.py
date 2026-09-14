@@ -1,7 +1,7 @@
 import streamlit as st
 import json
 import io
-from datetime import datetime
+from datetime import datetime, timedelta
 from google import genai
 from google.genai import types
 from google.oauth2 import service_account
@@ -31,9 +31,9 @@ creds = service_account.Credentials.from_service_account_info(
 )
 service = build("calendar", "v3", credentials=creds)
 
-# 2. 비서 도구 (일정 등록 / 일정 조회)
+# 2. 비서 도구 (등록 / 조회 / 삭제 / 수정)
 def add_calendar_event(summary: str, start_iso: str, end_iso: str, description: str = "") -> str:
-    """구글 캘린더에 일정을 등록합니다. 시간은 한국 표준시 ISO 형식(예: 2026-09-15T14:00:00+09:00)이어야 합니다."""
+    """구글 캘린더에 새 일정을 등록합니다. 시간은 한국 표준시 ISO 형식(예: 2026-09-15T14:00:00+09:00)이어야 합니다."""
     try:
         event = {
             'summary': summary,
@@ -46,14 +46,14 @@ def add_calendar_event(summary: str, start_iso: str, end_iso: str, description: 
     except Exception as e:
         return f"일정 등록 실패: {str(e)}"
 
-def get_calendar_events(days: int = 7) -> str:
+def get_calendar_events(days: int = 14) -> str:
     """오늘부터 향후 N일 동안의 구글 캘린더 일정을 조회합니다."""
     try:
         now = datetime.utcnow().isoformat() + 'Z'
         events_result = service.events().list(
             calendarId=calendar_id,
             timeMin=now,
-            maxResults=15,
+            maxResults=20,
             singleEvents=True,
             orderBy='startTime'
         ).execute()
@@ -64,36 +64,82 @@ def get_calendar_events(days: int = 7) -> str:
         res = []
         for e in events:
             start = e['start'].get('dateTime', e['start'].get('date'))
-            res.append(f"- {e.get('summary', '제목 없음')} ({start})")
+            res.append(f"- [ID: {e.get('id')}] {e.get('summary', '제목 없음')} ({start})")
         return "\n".join(res)
     except Exception as e:
         return f"일정 조회 실패: {str(e)}"
 
-tools = [add_calendar_event, get_calendar_events]
+def delete_calendar_event(query_title: str) -> str:
+    """제목이나 키워드에 해당하는 기존 일정을 검색하여 삭제합니다."""
+    try:
+        now = datetime.utcnow().isoformat() + 'Z'
+        events_result = service.events().list(
+            calendarId=calendar_id,
+            timeMin=now,
+            q=query_title,
+            maxResults=5,
+            singleEvents=True
+        ).execute()
+        events = events_result.get('items', [])
+        if not events:
+            return f"'{query_title}' 관련 일정을 찾을 수 없어 삭제하지 못했습니다."
+        
+        target = events[0]
+        service.events().delete(calendarId=calendar_id, eventId=target['id']).execute()
+        return f"일정 삭제 완료: '{target.get('summary')}' 일정을 삭제했습니다."
+    except Exception as e:
+        return f"일정 삭제 실패: {str(e)}"
+
+def update_calendar_event(query_title: str, new_summary: str = "", new_start_iso: str = "", new_end_iso: str = "") -> str:
+    """기존 일정의 제목이나 시간을 수정합니다."""
+    try:
+        now = datetime.utcnow().isoformat() + 'Z'
+        events_result = service.events().list(
+            calendarId=calendar_id,
+            timeMin=now,
+            q=query_title,
+            maxResults=5,
+            singleEvents=True
+        ).execute()
+        events = events_result.get('items', [])
+        if not events:
+            return f"수정할 '{query_title}' 관련 일정을 찾지 못했습니다."
+        
+        target = events[0]
+        if new_summary:
+            target['summary'] = new_summary
+        if new_start_iso:
+            target['start'] = {'dateTime': new_start_iso, 'timeZone': 'Asia/Seoul'}
+        if new_end_iso:
+            target['end'] = {'dateTime': new_end_iso, 'timeZone': 'Asia/Seoul'}
+            
+        service.events().update(calendarId=calendar_id, eventId=target['id'], body=target).execute()
+        return f"일정 수정 완료: '{target.get('summary')}' 일정의 정보가 업데이트되었습니다."
+    except Exception as e:
+        return f"일정 수정 실패: {str(e)}"
+
+tools = [add_calendar_event, get_calendar_events, delete_calendar_event, update_calendar_event]
 
 # 3. 대화 세션 관리
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# 이전 대화 내역 출력
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.write(msg["content"])
         if "audio" in msg and msg["audio"]:
             st.audio(msg["audio"], format="audio/mp3")
 
-# 4. 음성 인식(STT) 마이크 버튼 & 텍스트 입력 처리
+# 4. 음성 인식 및 텍스트 입력 UI
 st.write("---")
 col1, col2 = st.columns([1, 4])
 with col1:
-    # 한국어 음성 인식 마이크 버튼
     voice_prompt = speech_to_text(language="ko", start_prompt="🎤 말하기", stop_prompt="⏹️ 녹음 완료", key="STT")
 
-# 사용자 입력 결정 (음성 입력 또는 텍스트 입력)
-text_prompt = st.chat_input("태민이에게 일정이나 할 일을 말씀해주세요...")
+text_prompt = st.chat_input("태민이에게 일정 관리나 할 일을 말씀해주세요...")
 user_input = voice_prompt if voice_prompt else text_prompt
 
-# 5. 질문 처리 및 AI 응답
+# 5. 질문 처리 및 실행
 if user_input:
     st.session_state.messages.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
@@ -101,11 +147,13 @@ if user_input:
 
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     system_prompt = (
-        f"너의 이름은 '태민'이야. 사용자를 든든하고 똑똑하게 돕는 개인 전담 AI 비서야. "
-        f"답변은 음성으로 읽어줄 때 자연스럽도록 특수문자를 너무 많이 쓰지 말고, 정중하고 친절하게 대화체로 답해줘. "
+        f"너의 이름은 '태민'이야. 사용자의 일정과 생활을 총괄하는 다정하고 든든한 개인 AI 비서야. "
+        f"음성으로 듣기 편하도록 불필요한 특수문자나 기호는 피하고 친절한 대화체로 답변해줘. "
         f"현재 시간은 {now_str} (한국 표준시)야. "
-        f"일정 등록 요청 시에는 시간을 계산해 add_calendar_event 도구를 사용하고, "
-        f"일정 질문이 오면 get_calendar_events 도구를 호출해 확인한 뒤 알려줘."
+        f"- 일정 등록: add_calendar_event 사용 "
+        f"- 일정 조회: get_calendar_events 사용 "
+        f"- 일정 취소/삭제: delete_calendar_event 사용 "
+        f"- 일정 시간이나 내용 변경/연기: update_calendar_event 사용"
     )
 
     with st.chat_message("assistant"):
@@ -126,7 +174,7 @@ if user_input:
 
             st.write(reply_text)
 
-            # 음성 생성 (TTS)
+            # 음성 변환 (TTS)
             try:
                 tts = gTTS(text=reply_text, lang='ko')
                 audio_fp = io.BytesIO()
@@ -136,5 +184,4 @@ if user_input:
                 st.audio(audio_bytes, format="audio/mp3", autoplay=True)
                 st.session_state.messages.append({"role": "assistant", "content": reply_text, "audio": audio_bytes})
             except Exception:
-                # TTS 오류 시 텍스트만 저장
                 st.session_state.messages.append({"role": "assistant", "content": reply_text})
