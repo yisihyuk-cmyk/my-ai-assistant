@@ -297,3 +297,10 @@ if current_user_prompt:
                 st.session_state.messages.append({"role": "assistant", "content": reply_text, "audio": audio_bytes})
             except Exception:
                 st.session_state.messages.append({"role": "assistant", "content": reply_text})
+
+            # ----------------------------------------------------
+            # [추가] 메모를 삭제했거나 새로 저장했을 때 자동으로 사이드바/화면 새로고침!
+            # ----------------------------------------------------
+            if is_delete_cmd or "저장 완료" in reply_text or "보관 완료" in reply_text:
+                time.sleep(0.5)  # 음성 파일 전송 잠시 대기
+                st.rerun()
