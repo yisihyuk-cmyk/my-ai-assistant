@@ -5,3 +5,4 @@ google-auth
 streamlit-mic-recorder
 gTTS
 edge-tts
+elevenlabs
