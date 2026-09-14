@@ -48,9 +48,7 @@ creds = service_account.Credentials.from_service_account_info(
 )
 service = build("calendar", "v3", credentials=creds)
 
-# 3. 비서 도구 (캘린더 + 아카이브 도구 모음)
-
-# [캘린더 도구]
+# 3. 비서 도구 정의
 def add_calendar_event(summary: str, start_iso: str, end_iso: str, description: str = "") -> str:
     """구글 캘린더에 새 일정을 등록합니다."""
     try:
@@ -137,9 +135,8 @@ def update_calendar_event(query_title: str, new_summary: str = "", new_start_iso
     except Exception as e:
         return f"일정 수정 실패: {str(e)}"
 
-# [아카이브/메모 도구]
 def save_archive_note(content: str, category: str = "일반메모") -> str:
-    """아이디어, 할 일(To-Do), 생각, 중요 메모를 카테고리별로 아카이브에 기록합니다. (category는 '아이디어', '할일', '창작', '일반메모' 중 선택)"""
+    """아이디어, 할 일, 생각, 메모를 카테고리별로 아카이브에 기록합니다."""
     try:
         conn = sqlite3.connect("assistant_archive.db")
         c = conn.cursor()
@@ -148,12 +145,12 @@ def save_archive_note(content: str, category: str = "일반메모") -> str:
                   (category, content, now_time))
         conn.commit()
         conn.close()
-        return f"[{category}] 아카이빙 완료: '{content}'"
+        return f"[{category}] 보관 완료: '{content}'"
     except Exception as e:
         return f"메모 저장 실패: {str(e)}"
 
 def search_archive_notes(category: str = "", keyword: str = "") -> str:
-    """저장된 아카이브 메모 및 할 일을 검색하거나 조회합니다."""
+    """저장된 아카이브 메모 및 할 일을 검색합니다."""
     try:
         conn = sqlite3.connect("assistant_archive.db")
         c = conn.cursor()
@@ -184,7 +181,7 @@ tools = [
     save_archive_note, search_archive_notes
 ]
 
-# 4. 사이드바: 아카이브된 메모 모아보기
+# 4. 사이드바: 아카이브 보관함
 with st.sidebar:
     st.header("🗂️ 아카이브 보관함")
     conn = sqlite3.connect("assistant_archive.db")
@@ -202,11 +199,13 @@ with st.sidebar:
     else:
         st.caption("아직 기록된 메모나 아이디어가 없습니다.")
 
-# 5. 메인 화면 및 대화 영역
+# 5. 메인 화면 UI
 st.title("🤖 2int의 AI 비서 태민")
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
+if "last_voice_processed" not in st.session_state:
+    st.session_state.last_voice_processed = ""
 
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
@@ -214,20 +213,26 @@ for msg in st.session_state.messages:
         if "audio" in msg and msg["audio"]:
             st.audio(msg["audio"], format="audio/mp3")
 
-# 음성 및 텍스트 입력 UI
 st.write("---")
 col1, col2 = st.columns([1, 4])
 with col1:
-    voice_prompt = speech_to_text(language="ko", start_prompt="🎤 말하기", stop_prompt="⏹️ 녹음 완료", key="STT")
+    voice_input = speech_to_text(language="ko", start_prompt="🎤 말하기", stop_prompt="⏹️ 녹음 완료", key="STT")
 
-text_prompt = st.chat_input("일정, 할 일, 떠오른 아이디어를 말씀해주세요...")
-user_input = voice_prompt if voice_prompt else text_prompt
+text_input = st.chat_input("일정, 할 일, 떠오른 아이디어를 말씀해주세요...")
+
+# 중복 처리 방지 로직 (음성이 새로 들어왔을 때만 1회 처리)
+current_user_prompt = None
+if voice_input and voice_input != st.session_state.last_voice_processed:
+    current_user_prompt = voice_input
+    st.session_state.last_voice_processed = voice_input
+elif text_input:
+    current_user_prompt = text_input
 
 # 6. 질문 처리 및 AI 실행
-if user_input:
-    st.session_state.messages.append({"role": "user", "content": user_input})
+if current_user_prompt:
+    st.session_state.messages.append({"role": "user", "content": current_user_prompt})
     with st.chat_message("user"):
-        st.write(user_input)
+        st.write(current_user_prompt)
 
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     system_prompt = (
@@ -235,7 +240,7 @@ if user_input:
         f"음성으로 들을 때 부드럽고 자연스럽도록 특수문자를 남발하지 말고 정중하고 명확한 대화체로 답해줘. "
         f"현재 시간은 {now_str} (한국 표준시)야. "
         f"- 특정 시간/날짜가 정해진 약속/일정은 구글 캘린더 도구(add/get/delete/update_calendar_event)를 사용해. "
-        f"- 날짜/시간 약속이 아닌 생각, 아이디어, 글감, 체크리스트, 할 일 기록은 save_archive_note 도구를 사용해 적절한 카테고리('아이디어', '할일', '창작', '일반메모')로 보관해줘. "
+        f"- 날짜/시간 약속이 아닌 생각, 아이디어, 할 일 기록은 save_archive_note 도구를 사용해 보관해줘. "
         f"- 메모나 할 일 조회를 요청하면 search_archive_notes 도구를 사용해 찾아 알려줘."
     )
 
@@ -244,7 +249,7 @@ if user_input:
             try:
                 response = client.models.generate_content(
                     model="gemini-3.6-flash",
-                    contents=user_input,
+                    contents=current_user_prompt,
                     config=types.GenerateContentConfig(
                         tools=tools,
                         system_instruction=system_prompt,
@@ -253,11 +258,14 @@ if user_input:
                 )
                 reply_text = response.text if response.text else "네, 처리를 완료했습니다."
             except Exception as ex:
-                reply_text = f"오류가 발생했습니다: {str(ex)}"
+                err_msg = str(ex)
+                if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg:
+                    reply_text = "잠시 요청이 몰려 대기 중입니다. 약 30초 뒤에 다시 말씀해 주세요."
+                else:
+                    reply_text = f"오류가 발생했습니다: {err_msg}"
 
             st.write(reply_text)
 
-            # 음성 생성
             try:
                 tts = gTTS(text=reply_text, lang='ko')
                 audio_fp = io.BytesIO()
@@ -268,6 +276,3 @@ if user_input:
                 st.session_state.messages.append({"role": "assistant", "content": reply_text, "audio": audio_bytes})
             except Exception:
                 st.session_state.messages.append({"role": "assistant", "content": reply_text})
-
-            # 사이드바 메모 목록 실시간 갱신을 위해 새로고침
-            st.rerun()
