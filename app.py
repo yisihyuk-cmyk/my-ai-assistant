@@ -4,14 +4,13 @@ import io
 import sqlite3
 import time
 import requests
-import asyncio
-import edge_tts
 from datetime import datetime, timedelta
 from google import genai
 from google.genai import types
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from streamlit_mic_recorder import speech_to_text
+from elevenlabs.client import ElevenLabs
 
 st.set_page_config(page_title="2int의 AI 비서 태민", page_icon="🤖", layout="wide")
 
@@ -32,14 +31,18 @@ def init_db():
 
 init_db()
 
-# 2. 다중 API 키 및 구글 캘린더 인증 설정
+# 2. API 키 및 서비스 설정
 raw_keys = st.secrets.get("GEMINI_API_KEYS") or st.secrets.get("GEMINI_API_KEY", "")
 api_keys = [k.strip() for k in raw_keys.split(",") if k.strip()]
 calendar_id = st.secrets.get("CALENDAR_ID", "primary")
 service_account_str = st.secrets.get("GCP_SERVICE_ACCOUNT_JSON")
 
+# ElevenLabs 설정
+eleven_api_key = st.secrets.get("ELEVENLABS_API_KEY", "")
+eleven_voice_id = st.secrets.get("ELEVENLABS_VOICE_ID", "gDx7aX4UOQMthJevd64d")
+
 if not api_keys or not service_account_str:
-    st.error("API 키(GEMINI_API_KEYS) 또는 서비스 계정 설정(Secrets)을 확인해주세요.")
+    st.error("API 키(GEMINI_API_KEYS) 또는 서비스 계정 설정을 확인해주세요.")
     st.stop()
 
 service_account_info = json.loads(service_account_str)
@@ -49,34 +52,39 @@ creds = service_account.Credentials.from_service_account_info(
 )
 service = build("calendar", "v3", credentials=creds)
 
-# 3. Microsoft Edge-TTS 음성 변환 함수
-async def generate_edge_tts_audio(text: str, voice: str) -> bytes:
-    communicate = edge_tts.Communicate(text, voice)
-    audio_data = b""
-    async for chunk in communicate.stream():
-        if chunk["type"] == "audio":
-            audio_data += chunk["data"]
-    return audio_data
+# 3. ElevenLabs 실시간 음성 생성 함수
+def generate_elevenlabs_audio(text: str) -> bytes:
+    if not eleven_api_key:
+        return b""
+    try:
+        el_client = ElevenLabs(api_key=eleven_api_key)
+        audio_generator = el_client.text_to_speech.convert(
+            voice_id=eleven_voice_id,
+            text=text,
+            model_id="eleven_multilingual_v2",
+            voice_settings={
+                "stability": 0.5,
+                "similarity_boost": 0.85,
+                "style": 0.0,
+                "use_speaker_boost": True
+            }
+        )
+        audio_bytes = b"".join(audio_generator)
+        return audio_bytes
+    except Exception as e:
+        st.error(f"음성 생성 실패: {str(e)}")
+        return b""
 
-# 4. 사이드바 설정 (목소리 선택, 샘플 미리듣기, 아카이브)
+# 4. 사이드바 설정 (음성 안내 및 아카이브)
 with st.sidebar:
-    st.header("🎙️ 비서 목소리 설정")
-    voice_map = {
-        "현수 (가장 자연스럽고 편안한 톤)": "ko-KR-HyunsuNeural",
-        "인준 (차분하고 지적인 남성 톤)": "ko-KR-InJoonNeural",
-        "선희 (단정한 여성 아나운서)": "ko-KR-SunHiNeural",
-        "서현 (부드럽고 차분한 여성)": "ko-KR-SeoHyeonNeural",
-        "지민 (밝고 친근한 여성)": "ko-KR-JiMinNeural",
-        "봉진 (중후한 남성 톤)": "ko-KR-BongJinNeural",
-        "앤드루 (자연스러운 다국어 모델)": "en-US-AndrewMultilingualNeural"
-    }
-    selected_voice_label = st.selectbox("원하는 목소리를 고르세요", list(voice_map.keys()), index=0)
-    current_voice = voice_map[selected_voice_label]
-
-    if st.button("🔊 선택한 목소리 샘플 듣기", use_container_width=True):
-        sample_text = "안녕! 난 네 전담 비서 태민이야. 오늘 하루도 내가 든든하게 챙겨줄게."
-        sample_audio = asyncio.run(generate_edge_tts_audio(sample_text, voice=current_voice))
-        st.audio(sample_audio, format="audio/mp3", autoplay=True)
+    st.header("🎙️ 비서 목소리")
+    st.success("✨ 맞춤 복제 보이스(태민) 적용 중")
+    
+    if st.button("🔊 목소리 샘플 듣기", use_container_width=True):
+        sample_text = "안녕! 오늘 하루도 기분 좋게 시작해 보자. 내가 옆에서 다 챙겨줄게."
+        sample_audio = generate_elevenlabs_audio(sample_text)
+        if sample_audio:
+            st.audio(sample_audio, format="audio/mp3", autoplay=True)
 
     st.write("---")
     st.header("🗂️ 아카이브 보관함")
@@ -102,7 +110,7 @@ with st.sidebar:
     else:
         st.caption("저장된 메모나 아이디어가 없습니다.")
 
-# 5. 비서 도구 및 정보 수집 함수들
+# 5. 비서 도구 함수들
 def get_current_weather(lat: float = 37.3219, lon: float = 126.8309) -> str:
     try:
         url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=Asia%2FSeoul"
@@ -279,14 +287,12 @@ def direct_delete_memo(user_text: str):
 
 custom_tools = [add_calendar_event, get_calendar_events, delete_calendar_event, save_archive_note, search_archive_notes]
 
-# 6. Gemini API 키 로테이션 실행 함수
+# 6. Gemini 로테이션
 if "key_index" not in st.session_state:
     st.session_state.key_index = 0
 
 def generate_with_key_rotation(contents, system_prompt, use_tools=True, enable_search=False):
     total = len(api_keys)
-    last_error = ""
-
     for _ in range(total):
         active_key = api_keys[st.session_state.key_index]
         st.session_state.key_index = (st.session_state.key_index + 1) % total
@@ -311,16 +317,13 @@ def generate_with_key_rotation(contents, system_prompt, use_tools=True, enable_s
             )
             return response.text if response.text else "처리를 완료했어."
         except Exception as ex:
-            err_msg = str(ex)
-            last_error = err_msg
-            if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg:
+            if "429" in str(ex) or "RESOURCE_EXHAUSTED" in str(ex):
                 continue
-            else:
-                return f"오류가 생겼어: {err_msg}"
+            return f"오류 발생: {str(ex)}"
 
-    return "모든 API 키의 사용량이 일시적으로 찼어. 잠시만 이따가 다시 불러줘!"
+    return "API 사용량이 일시적으로 찼어. 잠시만 이따가 다시 불러줘!"
 
-# 7. 초고속 데일리 브리핑 (친근하고 다정한 반말 & 딱 3~4문장 요약)
+# 7. 데일리 브리핑
 def create_daily_briefing() -> str:
     weather_info = get_current_weather()
     today_events = get_today_calendar_events_str()
@@ -338,8 +341,8 @@ def create_daily_briefing() -> str:
 
     briefing_prompt = f"""
 너는 가장 친한 친구이자 든든한 전담 비서 '태민'이야.
-아래 정보를 보고 음성으로 빠르게 들을 수 있게 [친근하고 다정한 반말]로 딱 3~4문장 이내로 핵심만 요약 브리핑해줘.
-절대 길게 쓰지 말고, 특수문자나 마크다운 기호 없이 자연스럽게 이어지는 대화체여야 해.
+아래 정보를 보고 [친근하고 다정한 반말]로 딱 3~4문장 이내로 핵심만 요약 브리핑해줘.
+특수문자나 마크다운 기호 없이 자연스럽게 이어지는 대화체여야 해.
 
 - 오늘: {date_header}
 - 날씨: {weather_info}
@@ -409,7 +412,7 @@ elif text_input:
 elif active_image and not st.session_state.get("image_processed", False):
     current_user_prompt = "이 사진 보고 어떤 게 있는지, 식재료라면 가볍게 해먹을 수 있는 요리 추천해줘!"
 
-# 9. 요청 처리 및 음성 출력
+# 9. 요청 처리 및 ElevenLabs 음성 출력
 if current_user_prompt:
     user_msg_entry = {"role": "user", "content": current_user_prompt}
     img_bytes = None
@@ -430,7 +433,7 @@ if current_user_prompt:
     is_delete_cmd = any(k in current_user_prompt for k in ["삭제", "지워", "취소"]) and any(k in current_user_prompt for k in ["메모", "할일", "보관"])
 
     with st.chat_message("assistant"):
-        with st.spinner("태민이가 확인하고 있어..."):
+        with st.spinner("태민이가 목소리로 준비하고 있어..."):
             if is_briefing_cmd:
                 reply_text = create_daily_briefing()
             elif is_delete_cmd:
@@ -460,9 +463,10 @@ if current_user_prompt:
 
             st.write(reply_text)
 
-            try:
-                audio_bytes = asyncio.run(generate_edge_tts_audio(reply_text, voice=current_voice))
+            # 복제된 음성(ElevenLabs)으로 바로 재생
+            audio_bytes = generate_elevenlabs_audio(reply_text)
+            if audio_bytes:
                 st.audio(audio_bytes, format="audio/mp3", autoplay=True)
                 st.session_state.messages.append({"role": "assistant", "content": reply_text, "audio": audio_bytes})
-            except Exception:
+            else:
                 st.session_state.messages.append({"role": "assistant", "content": reply_text})
