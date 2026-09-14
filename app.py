@@ -48,7 +48,7 @@ creds = service_account.Credentials.from_service_account_info(
 )
 service = build("calendar", "v3", credentials=creds)
 
-# 3. 도구 함수들
+# 3. 비서 도구들
 def add_calendar_event(summary: str, start_iso: str, end_iso: str, description: str = "") -> str:
     """구글 캘린더에 새 일정을 등록합니다."""
     try:
@@ -145,13 +145,10 @@ def search_archive_notes(category: str = "", keyword: str = "") -> str:
     except Exception as e:
         return f"메모 조회 실패: {str(e)}"
 
-# 고속 직접 메모 삭제 함수 (API 호출 절약용)
-# 고속 직접 메모 삭제 함수 (유연한 단어 매칭)
+# 고속 직접 메모 삭제 함수 (API 미사용, 단어 매칭)
 def direct_delete_memo(user_text: str):
     conn = sqlite3.connect("assistant_archive.db")
     c = conn.cursor()
-    
-    # 1. 전체 메모 불러오기
     c.execute("SELECT id, content FROM archives ORDER BY id DESC")
     all_notes = c.fetchall()
     
@@ -159,22 +156,18 @@ def direct_delete_memo(user_text: str):
         conn.close()
         return False, "현재 보관함에 저장된 메모가 없습니다."
     
-    # 2. 사용자가 말한 문장의 핵심 명사/단어 조각들 중 메모 내용과 겹치는 것 찾기
     stop_words = ["삭제", "지워", "취소", "해줘", "관련", "해서", "메모", "항목", "에서", "좀", "해", "등록", "알려줘"]
     words = [w.strip() for w in user_text.split() if len(w.strip()) > 1 and not any(sw in w for sw in stop_words)]
     
     matched_target = None
     for note_id, content in all_notes:
-        # 단어 조각이 포함되어 있는지 확인
         if any(word in content for word in words):
             matched_target = (note_id, content)
             break
-        # 반대로 메모의 단어가 사용자의 말에 들어있는지 확인
         if any(part in user_text for part in content.split() if len(part) > 1):
             matched_target = (note_id, content)
             break
 
-    # 만약 특정 단어가 안 맞았는데 메모가 딱 1개뿐이라면 그 1개를 삭제
     if not matched_target and len(all_notes) == 1:
         matched_target = all_notes[0]
 
@@ -190,39 +183,14 @@ def direct_delete_memo(user_text: str):
 
 tools = [add_calendar_event, get_calendar_events, delete_calendar_event, save_archive_note, search_archive_notes]
 
-# 4. 사이드바: 아카이브 보관함
-with st.sidebar:
-    st.header("🗂️ 아카이브 보관함")
-    conn = sqlite3.connect("assistant_archive.db")
-    c = conn.cursor()
-    c.execute("SELECT id, category, content, created_at FROM archives ORDER BY id DESC LIMIT 20")
-    recent_notes = c.fetchall()
-    conn.close()
-    
-    if recent_notes:
-        for note_id, cat, content, date_str in recent_notes:
-            with st.expander(f"[{cat}] {content[:10]}... ({date_str})"):
-                st.write(f"**카테고리:** {cat}")
-                st.write(f"**내용:** {content}")
-                st.caption(f"기록 시간: {date_str}")
-                if st.button("🗑️ 즉시 삭제", key=f"del_{note_id}"):
-                    conn = sqlite3.connect("assistant_archive.db")
-                    c = conn.cursor()
-                    c.execute("DELETE FROM archives WHERE id = ?", (note_id,))
-                    conn.commit()
-                    conn.close()
-                    st.toast("삭제되었습니다!")
-                    st.rerun()
-    else:
-        st.caption("저장된 메모나 아이디어가 없습니다.")
+# 4. 세션 상태 관리 (중복 호출 차단용)
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+if "processed_voice_history" not in st.session_state:
+    st.session_state.processed_voice_history = set()
 
 # 5. 메인 UI
 st.title("🤖 2int의 AI 비서 태민")
-
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-if "last_voice_processed" not in st.session_state:
-    st.session_state.last_voice_processed = ""
 
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
@@ -233,24 +201,27 @@ for msg in st.session_state.messages:
 st.write("---")
 col1, col2 = st.columns([1, 4])
 with col1:
-    voice_input = speech_to_text(language="ko", start_prompt="🎤 말하기", stop_prompt="⏹️ 녹음 완료", key="STT")
+    voice_input = speech_to_text(language="ko", start_prompt="🎤 말하기", stop_prompt="⏹️ 녹음 완료", key="mic_btn")
 
 text_input = st.chat_input("일정, 할 일, 메모를 말씀해주세요...")
 
+# 사용자 입력 선별 (음성이 들어왔을 때 이전에 처리했던 음성이면 무시!)
 current_user_prompt = None
-if voice_input and voice_input != st.session_state.last_voice_processed:
-    current_user_prompt = voice_input
-    st.session_state.last_voice_processed = voice_input
+if voice_input:
+    # 타임스탬프 기반이 아닌 내용 기반 단발 처리
+    if voice_input not in st.session_state.processed_voice_history:
+        st.session_state.processed_voice_history.add(voice_input)
+        current_user_prompt = voice_input
 elif text_input:
     current_user_prompt = text_input
 
-# 6. 실행 로직
+# 6. 실행 및 응답
 if current_user_prompt:
     st.session_state.messages.append({"role": "user", "content": current_user_prompt})
     with st.chat_message("user"):
         st.write(current_user_prompt)
 
-    # [핵심] '메모 삭제' 요청인 경우 API 호출 없이 고속 직접 처리 (429 에러 100% 방지)
+    # 메모 삭제 요청인지 확인
     is_delete_cmd = any(k in current_user_prompt for k in ["삭제", "지워", "취소"]) and any(k in current_user_prompt for k in ["메모", "할일", "보관"])
     
     with st.chat_message("assistant"):
@@ -263,7 +234,7 @@ if current_user_prompt:
                     f"너의 이름은 '태민'이야. 개인 전담 AI 비서야. "
                     f"음성으로 들을 때 편하도록 특수문자를 최소화하고 친절하고 간결한 대화체로 답해줘. "
                     f"현재 시간은 {now_str} (한국 표준시)야. "
-                    f"- 특정 약속/일정 등록/조회: 구글 캘린더 도구 사용 "
+                    f"- 특정 약속/일정 등록 및 조회: 구글 캘린더 도구 사용 "
                     f"- 아이디어/메모/할 일 저장: save_archive_note 사용 "
                     f"- 메모/할 일 조회: search_archive_notes 사용"
                 )
@@ -281,7 +252,7 @@ if current_user_prompt:
                 except Exception as ex:
                     err_str = str(ex)
                     if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
-                        reply_text = "API 분당 사용량 한도에 도달했습니다. 약 30초 뒤에 다시 시도해 주세요."
+                        reply_text = "API 사용량 일시 제한입니다. 약 20초 뒤에 다시 시도해 주세요."
                     else:
                         reply_text = f"오류가 발생했습니다: {err_str}"
 
@@ -298,9 +269,27 @@ if current_user_prompt:
             except Exception:
                 st.session_state.messages.append({"role": "assistant", "content": reply_text})
 
-            # ----------------------------------------------------
-            # [추가] 메모를 삭제했거나 새로 저장했을 때 자동으로 사이드바/화면 새로고침!
-            # ----------------------------------------------------
-            if is_delete_cmd or "저장 완료" in reply_text or "보관 완료" in reply_text:
-                time.sleep(0.5)  # 음성 파일 전송 잠시 대기
-                st.rerun()
+# 7. 사이드바 보관함 (대화 처리 로직보다 "뒤"에 배치하여 st.rerun 없이도 즉시 최신 내용 반영)
+with st.sidebar:
+    st.header("🗂️ 아카이브 보관함")
+    conn = sqlite3.connect("assistant_archive.db")
+    c = conn.cursor()
+    c.execute("SELECT id, category, content, created_at FROM archives ORDER BY id DESC LIMIT 20")
+    recent_notes = c.fetchall()
+    conn.close()
+    
+    if recent_notes:
+        for note_id, cat, content, date_str in recent_notes:
+            with st.expander(f"[{cat}] {content[:10]}... ({date_str})"):
+                st.write(f"**카테고리:** {cat}")
+                st.write(f"**내용:** {content}")
+                st.caption(f"기록 시간: {date_str}")
+                if st.button("🗑️ 즉시 삭제", key=f"sidebar_del_{note_id}"):
+                    conn = sqlite3.connect("assistant_archive.db")
+                    c = conn.cursor()
+                    c.execute("DELETE FROM archives WHERE id = ?", (note_id,))
+                    conn.commit()
+                    conn.close()
+                    st.toast("삭제되었습니다!")
+    else:
+        st.caption("저장된 메모나 아이디어가 없습니다.")
