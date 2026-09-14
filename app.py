@@ -48,7 +48,7 @@ creds = service_account.Credentials.from_service_account_info(
 )
 service = build("calendar", "v3", credentials=creds)
 
-# 3. 비서 도구
+# 3. 도구 함수들
 def add_calendar_event(summary: str, start_iso: str, end_iso: str, description: str = "") -> str:
     """구글 캘린더에 새 일정을 등록합니다."""
     try:
@@ -100,37 +100,9 @@ def delete_calendar_event(query_title: str) -> str:
         
         target = events[0]
         service.events().delete(calendarId=calendar_id, eventId=target['id']).execute()
-        return f"일정 삭제 완료: '{target.get('summary')}' 삭제되었습니다."
+        return f"캘린더 일정 삭제 완료: '{target.get('summary')}' 일정을 삭제했습니다."
     except Exception as e:
         return f"일정 삭제 실패: {str(e)}"
-
-def update_calendar_event(query_title: str, new_summary: str = "", new_start_iso: str = "", new_end_iso: str = "") -> str:
-    """캘린더 일정을 수정합니다."""
-    try:
-        now = datetime.utcnow().isoformat() + 'Z'
-        events_result = service.events().list(
-            calendarId=calendar_id,
-            timeMin=now,
-            q=query_title,
-            maxResults=5,
-            singleEvents=True
-        ).execute()
-        events = events_result.get('items', [])
-        if not events:
-            return f"수정할 '{query_title}' 일정을 찾지 못했습니다."
-        
-        target = events[0]
-        if new_summary:
-            target['summary'] = new_summary
-        if new_start_iso:
-            target['start'] = {'dateTime': new_start_iso, 'timeZone': 'Asia/Seoul'}
-        if new_end_iso:
-            target['end'] = {'dateTime': new_end_iso, 'timeZone': 'Asia/Seoul'}
-            
-        service.events().update(calendarId=calendar_id, eventId=target['id'], body=target).execute()
-        return f"일정 수정 완료: '{target.get('summary')}' 정보가 수정되었습니다."
-    except Exception as e:
-        return f"일정 수정 실패: {str(e)}"
 
 def save_archive_note(content: str, category: str = "일반메모") -> str:
     """아이디어, 할 일, 메모를 아카이브에 기록합니다."""
@@ -173,33 +145,34 @@ def search_archive_notes(category: str = "", keyword: str = "") -> str:
     except Exception as e:
         return f"메모 조회 실패: {str(e)}"
 
-def delete_archive_note(keyword: str) -> str:
-    """핵심 키워드를 검색하여 해당하는 아카이브 메모를 삭제합니다."""
-    try:
-        conn = sqlite3.connect("assistant_archive.db")
-        c = conn.cursor()
-        # 단어 조각 검색
-        clean_key = keyword.replace("관련해서", "").replace("메모", "").replace("삭제해줘", "").strip()
-        c.execute("SELECT id, content FROM archives WHERE content LIKE ? ORDER BY id DESC LIMIT 1", (f"%{clean_key}%",))
-        target = c.fetchone()
-        if not target:
-            conn.close()
-            return f"'{clean_key}' 관련 메모를 찾지 못했습니다."
-        
+# 고속 직접 메모 삭제 함수 (API 호출 절약용)
+def direct_delete_memo(user_text: str):
+    # 불필요한 단어 제거하고 핵심 키워드 추출
+    stop_words = ["삭제", "지워", "취소", "해줘", "관련해서", "메모", "항목", "에서", "좀", "해"]
+    words = user_text.split()
+    target_words = [w for w in words if not any(sw in w for sw in stop_words)]
+    keyword = "".join(target_words).strip()
+    
+    conn = sqlite3.connect("assistant_archive.db")
+    c = conn.cursor()
+    if keyword:
+        c.execute("SELECT id, content FROM archives WHERE content LIKE ? ORDER BY id DESC LIMIT 1", (f"%{keyword}%",))
+    else:
+        c.execute("SELECT id, content FROM archives ORDER BY id DESC LIMIT 1")
+    target = c.fetchone()
+    
+    if target:
         note_id, content = target
         c.execute("DELETE FROM archives WHERE id = ?", (note_id,))
         conn.commit()
         conn.close()
-        return f"메모 삭제 완료: '{content}' 항목을 삭제했습니다."
-    except Exception as e:
-        return f"메모 삭제 실패: {str(e)}"
+        return True, f"'{content}' 메모를 보관함에서 삭제했습니다."
+    conn.close()
+    return False, "삭제할 해당하는 메모를 찾지 못했습니다."
 
-tools = [
-    add_calendar_event, get_calendar_events, delete_calendar_event, update_calendar_event,
-    save_archive_note, search_archive_notes, delete_archive_note
-]
+tools = [add_calendar_event, get_calendar_events, delete_calendar_event, save_archive_note, search_archive_notes]
 
-# 4. 사이드바: 아카이브 보관함 & 즉시 삭제
+# 4. 사이드바: 아카이브 보관함
 with st.sidebar:
     st.header("🗂️ 아카이브 보관함")
     conn = sqlite3.connect("assistant_archive.db")
@@ -220,12 +193,12 @@ with st.sidebar:
                     c.execute("DELETE FROM archives WHERE id = ?", (note_id,))
                     conn.commit()
                     conn.close()
-                    st.toast("메모가 삭제되었습니다!")
+                    st.toast("삭제되었습니다!")
                     st.rerun()
     else:
         st.caption("저장된 메모나 아이디어가 없습니다.")
 
-# 5. 메인 화면 UI
+# 5. 메인 UI
 st.title("🤖 2int의 AI 비서 태민")
 
 if "messages" not in st.session_state:
@@ -253,27 +226,29 @@ if voice_input and voice_input != st.session_state.last_voice_processed:
 elif text_input:
     current_user_prompt = text_input
 
-# 6. 질문 처리 및 AI 응답
+# 6. 실행 로직
 if current_user_prompt:
     st.session_state.messages.append({"role": "user", "content": current_user_prompt})
     with st.chat_message("user"):
         st.write(current_user_prompt)
 
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    system_prompt = (
-        f"너의 이름은 '태민'이야. 개인 전담 AI 비서야. "
-        f"음성 재생에 알맞도록 특수문자를 최소화하고 친절하고 간결한 대화체로 답해줘. "
-        f"현재 시간은 {now_str} (한국 표준시)야. "
-        f"- 특정 약속/일정: 구글 캘린더 도구 사용 "
-        f"- 아이디어/메모/할 일 저장: save_archive_note 사용 "
-        f"- 메모/할 일 조회: search_archive_notes 사용 "
-        f"- 메모/할 일 삭제 요청 시: 사용자의 긴 문장에서 대상 키워드(예: '흥국생명')만 추출해 delete_archive_note를 반드시 실행해줘."
-    )
-
+    # [핵심] '메모 삭제' 요청인 경우 API 호출 없이 고속 직접 처리 (429 에러 100% 방지)
+    is_delete_cmd = any(k in current_user_prompt for k in ["삭제", "지워", "취소"]) and any(k in current_user_prompt for k in ["메모", "할일", "보관"])
+    
     with st.chat_message("assistant"):
         with st.spinner("태민이가 확인하고 있습니다..."):
-            reply_text = ""
-            for attempt in range(2):
+            if is_delete_cmd:
+                _, reply_text = direct_delete_memo(current_user_prompt)
+            else:
+                now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                system_prompt = (
+                    f"너의 이름은 '태민'이야. 개인 전담 AI 비서야. "
+                    f"음성으로 들을 때 편하도록 특수문자를 최소화하고 친절하고 간결한 대화체로 답해줘. "
+                    f"현재 시간은 {now_str} (한국 표준시)야. "
+                    f"- 특정 약속/일정 등록/조회: 구글 캘린더 도구 사용 "
+                    f"- 아이디어/메모/할 일 저장: save_archive_note 사용 "
+                    f"- 메모/할 일 조회: search_archive_notes 사용"
+                )
                 try:
                     response = client.models.generate_content(
                         model="gemini-3.6-flash",
@@ -285,14 +260,10 @@ if current_user_prompt:
                         )
                     )
                     reply_text = response.text if response.text else "처리를 완료했습니다."
-                    break
                 except Exception as ex:
                     err_str = str(ex)
                     if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
-                        if attempt == 0:
-                            time.sleep(3)  # 3초 대기 후 1회 자동 재시도
-                            continue
-                        reply_text = "요청이 잠시 몰렸습니다. 10~20초 뒤에 다시 시도해 주세요."
+                        reply_text = "API 분당 사용량 한도에 도달했습니다. 약 30초 뒤에 다시 시도해 주세요."
                     else:
                         reply_text = f"오류가 발생했습니다: {err_str}"
 
