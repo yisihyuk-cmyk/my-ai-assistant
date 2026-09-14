@@ -1,22 +1,21 @@
 import streamlit as st
 import sqlite3
 from datetime import datetime
-from google import genai
-from google.genai import types
+import google.generativeai as genai
 
 # 모바일 화면 최적화 설정
 st.set_page_config(page_title="나만의 AI 비서", page_icon="🤖")
 st.title("🤖 나만의 개인 비서")
 
-# API 키 설정 (보안 저장소에서 가져옴)
+# API 키 설정
 api_key = st.secrets.get("GEMINI_API_KEY")
 if not api_key:
-    st.error("API 키가 설정되지 않았습니다. 관리자 설정을 확인해주세요.")
+    st.error("API 키가 설정되지 않았습니다.")
     st.stop()
 
-client = genai.Client(api_key=api_key)
+genai.configure(api_key=api_key)
 
-# 1. 간단한 메모/일정 저장소(DB) 준비
+# 1. 로컬 저장소 초기화
 def init_db():
     conn = sqlite3.connect("assistant.db")
     c = conn.cursor()
@@ -26,7 +25,6 @@ def init_db():
 
 init_db()
 
-# 2. AI가 사용할 도구 함수 정의
 def save_memo(content: str) -> str:
     """사용자의 일정이나 중요한 메모, 할 일을 기록합니다."""
     conn = sqlite3.connect("assistant.db")
@@ -48,32 +46,31 @@ def read_memos() -> str:
         return "현재 저장된 메모나 일정이 없습니다."
     return "\n".join([f"- [{time}] {text}" for text, time in rows])
 
-tools = [save_memo, read_memos]
+# 2. 모델 설정
+model = genai.GenerativeModel(
+    model_name="gemini-1.5-flash",
+    tools=[save_memo, read_memos],
+    system_instruction="너는 친절한 모바일 개인 비서야. 사용자가 일정이나 메모를 남기면 save_memo 도구로 저장해주고, 확인해달라고 하면 read_memos 도구로 목록을 확인해서 친절히 알려줘."
+)
 
-# 3. 대화 화면 구성
+if "chat" not in st.session_state:
+    st.session_state.chat = model.start_chat(enable_automatic_function_calling=True)
+
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# 이전 대화 출력
+# 대화 내용 표시
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.write(msg["content"])
 
-# 스마트폰 입력창
+# 입력창
 if user_input := st.chat_input("일정이나 메모를 말씀해주세요..."):
     st.session_state.messages.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.write(user_input)
 
-    # AI 답변 생성
     with st.chat_message("assistant"):
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=user_input,
-            config=types.GenerateContentConfig(
-                tools=tools,
-                system_instruction="너는 친절한 모바일 개인 비서야. 사용자가 일정이나 메모를 남기면 저장해주고, 확인해달라고 하면 목록을 알려줘."
-            )
-        )
+        response = st.session_state.chat.send_message(user_input)
         st.write(response.text)
         st.session_state.messages.append({"role": "assistant", "content": response.text})
