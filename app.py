@@ -53,12 +53,12 @@ service = build("calendar", "v3", credentials=creds)
 with st.sidebar:
     st.header("🎙️ 비서 목소리 설정")
     voice_map = {
-        "두준 (차분한 남성 비서)": "ko-KR-InJoonNeural",
-        "선희 (단정한 여성 아나운서)": "ko-KR-SunHiNeural",
-        "태민 (다정하고 자연스러운 청년)": "ko-KR-HyunsuNeural",
-        "동원 (신뢰감 있는 중후한 남성)": "ko-KR-BongJinNeural",
-        "지민 (밝고 친근한 여성)": "ko-KR-JiMinNeural",
-        "서현 (부드럽고 편안한 여성)": "ko-KR-SeoHyeonNeural",
+        "태민 (자연스러운 다국어 보이스)": "en-US-AndrewMultilingualNeural",
+        "현수 (가장 자연스럽고 편안한 톤)": "ko-KR-HyunsuNeural",
+        "인준 (차분하고 지적인 비서)": "ko-KR-InJoonNeural",
+        "태민 (자연스러운 다국어 보이스)": "en-US-AndrewMultilingualNeural",
+        "에바 (부드러운 다국어 여성 톤)": "en-US-AvaMultilingualNeural",
+        "선희 (단정한 아나운서)": "ko-KR-SunHiNeural",
     }
     selected_voice_label = st.selectbox("원하는 목소리를 고르세요", list(voice_map.keys()), index=0)
     current_voice = voice_map[selected_voice_label]
