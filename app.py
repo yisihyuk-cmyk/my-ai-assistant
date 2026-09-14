@@ -12,7 +12,7 @@ from gtts import gTTS
 
 st.set_page_config(page_title="2int의 AI 비서 태민", page_icon="🤖", layout="wide")
 
-# 1. 로컬 데이터베이스 초기화 (메모 및 아카이브용)
+# 1. 로컬 데이터베이스 초기화
 def init_db():
     conn = sqlite3.connect("assistant_archive.db")
     c = conn.cursor()
@@ -40,7 +40,6 @@ if not api_key or not service_account_str:
 
 client = genai.Client(api_key=api_key)
 
-# 구글 캘린더 클라이언트 준비
 service_account_info = json.loads(service_account_str)
 creds = service_account.Credentials.from_service_account_info(
     service_account_info,
@@ -48,7 +47,7 @@ creds = service_account.Credentials.from_service_account_info(
 )
 service = build("calendar", "v3", credentials=creds)
 
-# 3. 비서 도구 정의
+# 3. 비서 도구 (캘린더 + 아카이브)
 def add_calendar_event(summary: str, start_iso: str, end_iso: str, description: str = "") -> str:
     """구글 캘린더에 새 일정을 등록합니다."""
     try:
@@ -99,7 +98,7 @@ def delete_calendar_event(query_title: str) -> str:
         ).execute()
         events = events_result.get('items', [])
         if not events:
-            return f"'{query_title}' 관련 일정을 찾을 수 없어 삭제하지 못했습니다."
+            return f"'{query_title}' 관련 캘린더 일정을 찾을 수 없어 삭제하지 못했습니다."
         
         target = events[0]
         service.events().delete(calendarId=calendar_id, eventId=target['id']).execute()
@@ -154,7 +153,7 @@ def search_archive_notes(category: str = "", keyword: str = "") -> str:
     try:
         conn = sqlite3.connect("assistant_archive.db")
         c = conn.cursor()
-        query = "SELECT category, content, created_at FROM archives WHERE 1=1"
+        query = "SELECT id, category, content, created_at FROM archives WHERE 1=1"
         params = []
         if category:
             query += " AND category LIKE ?"
@@ -171,31 +170,57 @@ def search_archive_notes(category: str = "", keyword: str = "") -> str:
         if not rows:
             return "해당하는 메모나 기록이 없습니다."
         
-        res = [f"- [{cat} | {time}] {text}" for cat, text, time in rows]
+        res = [f"- [번호:{row[0]} | {row[1]} | {row[3]}] {row[2]}" for row in rows]
         return "\n".join(res)
     except Exception as e:
         return f"메모 조회 실패: {str(e)}"
 
+def delete_archive_note(keyword: str) -> str:
+    """단어나 내용을 검색하여 해당하는 아카이브 메모나 할 일을 삭제합니다."""
+    try:
+        conn = sqlite3.connect("assistant_archive.db")
+        c = conn.cursor()
+        c.execute("SELECT id, content FROM archives WHERE content LIKE ? ORDER BY id DESC LIMIT 1", (f"%{keyword}%",))
+        target = c.fetchone()
+        if not target:
+            conn.close()
+            return f"'{keyword}' 관련 메모를 찾을 수 없어 삭제하지 못했습니다."
+        
+        note_id, content = target
+        c.execute("DELETE FROM archives WHERE id = ?", (note_id,))
+        conn.commit()
+        conn.close()
+        return f"메모 삭제 완료: '{content}' 항목을 삭제했습니다."
+    except Exception as e:
+        return f"메모 삭제 실패: {str(e)}"
+
 tools = [
     add_calendar_event, get_calendar_events, delete_calendar_event, update_calendar_event,
-    save_archive_note, search_archive_notes
+    save_archive_note, search_archive_notes, delete_archive_note
 ]
 
-# 4. 사이드바: 아카이브 보관함
+# 4. 사이드바: 아카이브 보관함 & 직접 삭제 버튼
 with st.sidebar:
     st.header("🗂️ 아카이브 보관함")
     conn = sqlite3.connect("assistant_archive.db")
     c = conn.cursor()
-    c.execute("SELECT category, content, created_at FROM archives ORDER BY id DESC LIMIT 15")
+    c.execute("SELECT id, category, content, created_at FROM archives ORDER BY id DESC LIMIT 20")
     recent_notes = c.fetchall()
     conn.close()
     
     if recent_notes:
-        for cat, content, date_str in recent_notes:
-            with st.expander(f"[{cat}] {content[:15]}... ({date_str})"):
+        for note_id, cat, content, date_str in recent_notes:
+            with st.expander(f"[{cat}] {content[:12]}... ({date_str})"):
                 st.write(f"**카테고리:** {cat}")
                 st.write(f"**내용:** {content}")
                 st.caption(f"기록 시간: {date_str}")
+                if st.button("🗑️ 삭제", key=f"del_note_{note_id}"):
+                    conn = sqlite3.connect("assistant_archive.db")
+                    c = conn.cursor()
+                    c.execute("DELETE FROM archives WHERE id = ?", (note_id,))
+                    conn.commit()
+                    conn.close()
+                    st.success("삭제되었습니다.")
     else:
         st.caption("아직 기록된 메모나 아이디어가 없습니다.")
 
@@ -218,9 +243,8 @@ col1, col2 = st.columns([1, 4])
 with col1:
     voice_input = speech_to_text(language="ko", start_prompt="🎤 말하기", stop_prompt="⏹️ 녹음 완료", key="STT")
 
-text_input = st.chat_input("일정, 할 일, 떠오른 아이디어를 말씀해주세요...")
+text_input = st.chat_input("일정, 할 일, 메모를 말씀해주세요...")
 
-# 중복 처리 방지 로직 (음성이 새로 들어왔을 때만 1회 처리)
 current_user_prompt = None
 if voice_input and voice_input != st.session_state.last_voice_processed:
     current_user_prompt = voice_input
@@ -239,9 +263,10 @@ if current_user_prompt:
         f"너의 이름은 '태민'이야. 사용자의 일정, 할 일, 영감과 아이디어를 종합 관리하는 든든한 개인 AI 비서야. "
         f"음성으로 들을 때 부드럽고 자연스럽도록 특수문자를 남발하지 말고 정중하고 명확한 대화체로 답해줘. "
         f"현재 시간은 {now_str} (한국 표준시)야. "
-        f"- 특정 시간/날짜가 정해진 약속/일정은 구글 캘린더 도구(add/get/delete/update_calendar_event)를 사용해. "
-        f"- 날짜/시간 약속이 아닌 생각, 아이디어, 할 일 기록은 save_archive_note 도구를 사용해 보관해줘. "
-        f"- 메모나 할 일 조회를 요청하면 search_archive_notes 도구를 사용해 찾아 알려줘."
+        f"- 특정 시간/날짜 약속: 구글 캘린더 도구(add/get/delete/update_calendar_event) 사용 "
+        f"- 메모/할 일/생각 저장: save_archive_note 도구 사용 "
+        f"- 메모/할 일 조회: search_archive_notes 도구 사용 "
+        f"- 메모/할 일 삭제 요청: delete_archive_note 도구 사용"
     )
 
     with st.chat_message("assistant"):
