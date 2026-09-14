@@ -6,7 +6,7 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
 st.set_page_config(page_title="나만의 AI 비서", page_icon="🤖")
-st.title("🤖 나만의 구글 캘린더 비서")
+st.title("🤖 2int의 구글 캘린더 비서 태민")
 
 # 1. 인증 설정
 api_key = st.secrets.get("GEMINI_API_KEY")
@@ -64,9 +64,14 @@ tools = [add_calendar_event, get_calendar_events]
 # 3. 모델 설정
 now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 model = genai.GenerativeModel(
-    model_name="gemini-1.5-flash",
+    model_name="models/gemini-1.5-flash",
     tools=tools,
-    system_instruction=f"너는 사용자의 구글 캘린더 개인 비서야. 현재 시간은 {now_str} (KST)야. 일정을 등록해달라고 하면 시작과 종료 시간을 맞춰 add_calendar_event를 부르고, 일정을 물어보면 get_calendar_events로 확인해서 답해줘."
+    system_instruction=(
+    f"너는 신뢰할 수 있는 전문 일정 총괄 비서야. "
+    f"항상 정중하고 간결하게 핵심만 보고하듯 답변해. "
+    f"현재 시간은 {now_str} (KST)야. 일정을 등록해달라고 하면 시간을 명확히 계산해 add_calendar_event를 실행하고, "
+    f"일정을 물어보면 get_calendar_events로 조회해서 깔끔한 글머리 기호로 요약해줘."
+)
 )
 
 if "chat" not in st.session_state:
