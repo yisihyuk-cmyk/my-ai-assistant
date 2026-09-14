@@ -6,7 +6,7 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
 st.set_page_config(page_title="나만의 AI 비서", page_icon="🤖")
-st.title("🤖 2int의 구글 캘린더 비서 태민")
+st.title("🤖 2int의 AI 비서 태민")
 
 # 1. 인증 설정
 api_key = st.secrets.get("GEMINI_API_KEY")
