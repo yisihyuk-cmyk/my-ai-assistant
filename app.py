@@ -54,7 +54,34 @@ creds = service_account.Credentials.from_service_account_info(
 )
 service = build("calendar", "v3", credentials=creds)
 
-# 3. ElevenLabs 실시간 음성 생성 함수 (발음 교정 포함)
+# 3. 지난 [할일] 일정 자동 정리 (Auto-Cleaner)
+def cleanup_past_todo_events():
+    """종료 시간이 지난 [할일] 항목만 캘린더에서 자동 영구 삭제"""
+    try:
+        now_dt = datetime.now()
+        now_iso = now_dt.isoformat() + 'Z'
+        past_limit_iso = (now_dt - timedelta(days=7)).isoformat() + 'Z'
+        
+        events_result = service.events().list(
+            calendarId=calendar_id,
+            timeMin=past_limit_iso,
+            timeMax=now_iso,
+            singleEvents=True
+        ).execute()
+        events = events_result.get('items', [])
+        
+        for e in events:
+            summary = e.get('summary', '')
+            desc = e.get('description', '')
+            if "[할일]" in summary or "[TODO]" in summary or desc == "auto_delete_todo":
+                service.events().delete(calendarId=calendar_id, eventId=e['id']).execute()
+    except Exception:
+        pass
+
+# 앱 구동 시 지난 할 일 청소
+cleanup_past_todo_events()
+
+# 4. ElevenLabs 음성 생성 함수
 def fix_pronunciation(text: str) -> str:
     misheard_names = ["정숙", "영수", "진수", "정서", "점수", "정선"]
     for wrong in misheard_names:
@@ -83,7 +110,7 @@ def generate_elevenlabs_audio(text: str) -> bytes:
     except Exception:
         return b""
 
-# 4. 스마트폰 푸시 알림 전송 함수 (ntfy)
+# 5. 스마트폰 푸시 알림 전송 함수 (ntfy)
 def send_push_notification(title: str, message: str):
     if not ntfy_topic:
         return
@@ -101,7 +128,7 @@ def send_push_notification(title: str, message: str):
     except Exception:
         pass
 
-# 5. 비서 도구 함수들
+# 6. 비서 도구 함수들
 def get_current_weather(lat: float = 37.3219, lon: float = 126.8309) -> str:
     try:
         url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=Asia%2FSeoul"
@@ -127,14 +154,16 @@ def get_current_weather(lat: float = 37.3219, lon: float = 126.8309) -> str:
 
 def add_calendar_event(summary: str, start_iso: str, end_iso: str, description: str = "") -> str:
     try:
+        # 태민이가 등록하는 모든 건 자동으로 [할일] 태그 부여
+        final_summary = summary if summary.startswith("[할일]") else f"[할일] {summary}"
         event = {
-            'summary': summary,
-            'description': description,
+            'summary': final_summary,
+            'description': "auto_delete_todo" if not description else f"auto_delete_todo | {description}",
             'start': {'dateTime': start_iso, 'timeZone': 'Asia/Seoul'},
             'end': {'dateTime': end_iso, 'timeZone': 'Asia/Seoul'},
         }
         service.events().insert(calendarId=calendar_id, body=event).execute()
-        return f"일정 등록 완료: '{summary}' ({start_iso} ~ {end_iso})"
+        return f"할 일 등록 완료: '{final_summary}' ({start_iso} ~ {end_iso})"
     except Exception as e:
         return f"일정 등록 실패: {str(e)}"
 
@@ -280,7 +309,7 @@ def direct_delete_memo(user_text: str):
     conn.close()
     return False, "어떤 메모를 지워야 할지 못 찾겠어. 다시 말해줘!"
 
-# 6. 백그라운드 자동 메모 감지 (영감창작 분리 강화)
+# 7. 백그라운드 자동 메모 감지
 def auto_detect_and_remember(user_prompt: str):
     if len(user_prompt.strip()) < 5:
         return
@@ -317,7 +346,7 @@ def auto_detect_and_remember(user_prompt: str):
 
 custom_tools = [add_calendar_event, get_calendar_events, delete_calendar_event, save_archive_note, search_archive_notes]
 
-# 7. Gemini 로테이션 엔진
+# 8. Gemini 로테이션 엔진
 if "key_index" not in st.session_state:
     st.session_state.key_index = 0
 
@@ -356,8 +385,11 @@ def generate_with_key_rotation(contents, system_prompt, use_tools=True, enable_s
 
     return f"API 연결이 원활하지 않아. (원인: {last_error if last_error else '할당량 초과'})"
 
-# 8. 고도화된 데일리 브리핑 (이동/날씨 팁 + 주말 문화생활 리마인더)
+# 9. 데일리 브리핑
 def create_daily_briefing() -> str:
+    # 브리핑 시작 전 지난 할 일 한 번 더 청소
+    cleanup_past_todo_events()
+    
     weather_info = get_current_weather()
     today_events = get_today_calendar_events_str()
     
@@ -383,7 +415,7 @@ def create_daily_briefing() -> str:
 
 - 오늘: {date_header}
 - 날씨: {weather_info}
-- 오늘 캘린더 일정: {today_events}
+- 오늘 캘린더 일정/할일: {today_events}
 - 최근 메모/할 일/단상: {recent_mem_str}
 - 주말 근접 여부: {is_near_weekend}
 
@@ -398,7 +430,7 @@ def create_daily_briefing() -> str:
     send_push_notification("☀️ 태민이의 오늘 아침 브리핑", briefing_text)
     return briefing_text
 
-# 9. 사이드바 설정 (음성 안내, 영감 메모 내보내기, 아카이브)
+# 10. 사이드바 설정 (음성 안내, 영감 메모 다운로드, 아카이브)
 with st.sidebar:
     st.header("🎙️ 비서 목소리")
     st.success("✨ 맞춤 복제 보이스(태민) 연결됨")
@@ -443,7 +475,7 @@ with st.sidebar:
     else:
         st.caption("저장된 메모나 아이디어가 없습니다.")
 
-# 10. 모바일 반응형 헤더
+# 11. 모바일 반응형 헤더
 def get_image_base64(path):
     if os.path.exists(path):
         with open(path, "rb") as f:
@@ -484,7 +516,6 @@ with col_b1:
     if st.button("☀️ 오늘의 데일리 브리핑", use_container_width=True):
         trigger_briefing = True
 with col_b2:
-    # 켜두면 어떤 상황에서도 음성을 생성하지 않음 (크레딧 100% 절약)
     mute_mode = st.toggle("🔇 텍스트만 (음성 끄기)", value=False)
 
 # 대화 내용 출력
@@ -498,7 +529,7 @@ for msg in st.session_state.messages:
 
 st.write("---")
 
-# 📷 카메라 / 사진 업로드 (배터리 보호 토글 적용)
+# 📷 카메라 / 사진 업로드 (배터리 보호)
 camera_img = None
 file_img = None
 
@@ -520,7 +551,6 @@ with col1:
 
 text_input = st.chat_input("일정, 질문, 식재료 추천 등 무엇이든 편하게 말해줘...")
 
-# 입력 방식 감지 플래그 (텍스트 타이핑 여부)
 current_user_prompt = None
 is_typing_input = False
 
@@ -528,7 +558,7 @@ if trigger_briefing:
     current_user_prompt = "오늘 데일리 브리핑 시작해줘"
 elif text_input:
     current_user_prompt = text_input
-    is_typing_input = True  # 타이핑으로 입력함 -> 기본적으로 음성 생성 건너뜀
+    is_typing_input = True
 elif voice_input:
     if voice_input not in st.session_state.processed_voice_history:
         st.session_state.processed_voice_history.add(voice_input)
@@ -536,7 +566,7 @@ elif voice_input:
 elif active_image and not st.session_state.get("image_processed", False):
     current_user_prompt = "이 사진 보고 어떤 식재료가 있는지, 두부나 양배추처럼 담백하게 전자레인지나 밥솥으로 해먹을 수 있는 깔끔한 메뉴 추천해줘!"
 
-# 11. 요청 처리 및 지능형 음성 출력
+# 12. 요청 처리 및 지능형 음성 출력
 if current_user_prompt:
     user_msg_entry = {"role": "user", "content": current_user_prompt}
     img_bytes = None
@@ -574,9 +604,10 @@ if current_user_prompt:
                     f"존댓말 쓰지 말고 편안하고 다정한 반말로 짧고 명확하게 대답해줘. "
                     f"음성으로 들을 때 편하도록 특수문자나 마크다운 기호는 쓰지 마. "
                     f"현재 시간은 {now_str} (한국 표준시)야. "
-                    f"- 일정 등록/조회/삭제 요청이 오면 반드시 캘린더 도구를 사용해. "
-                    f"- 메모/할 일 저장은 archive 도구를 사용해. "
-                    f"- 식단이나 식재료 질문/사진 분석 시: 고기보다는 두부, 양배추, 가벼운 채소 중심의 담백하고 자극 없는 전자레인지/간편 조리법을 우선 제안해."
+                    f"- 정수가 부탁하는 모든 스케줄 등록은 Tasks(할 일)로 간주하며, add_calendar_event 도구를 사용해 등록해. (자동으로 [할일] 태그 부여됨) "
+                    f"- 일정 조회 및 삭제 요청 시에도 캘린더 도구를 사용해. "
+                    f"- 메모 저장은 archive 도구를 사용해. "
+                    f"- 식단 질문/사진 분석 시: 두부, 양배추, 가벼운 채소 중심의 담백한 전자레인지/간편 조리법을 우선 제안해."
                 )
 
                 if img_bytes:
@@ -591,10 +622,6 @@ if current_user_prompt:
 
             st.write(reply_text)
 
-            # 음성 생성 조건 판단:
-            # 1) '텍스트만(음소거)' 토글이 켜져 있으면 음성 미생성
-            # 2) 키보드로 글을 타이핑해서 보낸 경우도 조용한 상황으로 간주하여 음성 미생성
-            # 3) 마이크 음성 대화나 브리핑 요청일 때만 ElevenLabs 호출 (토큰 대폭 절약)
             should_speak = (not mute_mode) and (not is_typing_input or trigger_briefing)
 
             if should_speak:
@@ -605,5 +632,4 @@ if current_user_prompt:
                 else:
                     st.session_state.messages.append({"role": "assistant", "content": reply_text})
             else:
-                # 텍스트만 기록하고 음성 API 토큰 0 소모
                 st.session_state.messages.append({"role": "assistant", "content": reply_text})
