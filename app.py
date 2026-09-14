@@ -75,16 +75,10 @@ def generate_elevenlabs_audio(text: str) -> bytes:
         st.error(f"음성 생성 실패: {str(e)}")
         return b""
 
-# 4. 사이드바 설정 (음성 안내 및 아카이브)
+# 4. 사이드바 설정 (음성 상태 안내 및 아카이브)
 with st.sidebar:
     st.header("🎙️ 비서 목소리")
-    st.success("✨ 맞춤 복제 보이스(태민) 적용 중")
-    
-    if st.button("🔊 목소리 샘플 듣기", use_container_width=True):
-        sample_text = "안녕! 오늘 하루도 기분 좋게 시작해 보자. 내가 옆에서 다 챙겨줄게."
-        sample_audio = generate_elevenlabs_audio(sample_text)
-        if sample_audio:
-            st.audio(sample_audio, format="audio/mp3", autoplay=True)
+    st.success("✨ 맞춤 복제 보이스(태민) 연결됨")
 
     st.write("---")
     st.header("🗂️ 아카이브 보관함")
@@ -323,7 +317,7 @@ def generate_with_key_rotation(contents, system_prompt, use_tools=True, enable_s
 
     return "API 사용량이 일시적으로 찼어. 잠시만 이따가 다시 불러줘!"
 
-# 7. 데일리 브리핑
+# 7. 초고속 데일리 브리핑 (친근한 반말 & 3~4문장 요약)
 def create_daily_briefing() -> str:
     weather_info = get_current_weather()
     today_events = get_today_calendar_events_str()
@@ -463,7 +457,7 @@ if current_user_prompt:
 
             st.write(reply_text)
 
-            # 복제된 음성(ElevenLabs)으로 바로 재생
+            # ElevenLabs 복제 보이스 재생
             audio_bytes = generate_elevenlabs_audio(reply_text)
             if audio_bytes:
                 st.audio(audio_bytes, format="audio/mp3", autoplay=True)
