@@ -75,7 +75,6 @@ def generate_elevenlabs_audio(text: str) -> bytes:
         audio_bytes = b"".join(audio_generator)
         return audio_bytes
     except Exception as e:
-        st.error(f"음성 생성 실패: {str(e)}")
         return b""
 
 # 4. 스마트폰 푸시 알림 전송 함수 (ntfy)
@@ -135,19 +134,24 @@ def add_calendar_event(summary: str, start_iso: str, end_iso: str, description: 
 
 def get_calendar_events(days: int = 14) -> str:
     try:
-        now = datetime.utcnow().isoformat() + 'Z'
+        # 오늘 시작 시점부터 넉넉하게 조회
+        now = (datetime.now() - timedelta(days=1)).isoformat() + 'Z'
         events_result = service.events().list(
             calendarId=calendar_id,
             timeMin=now,
-            maxResults=20,
+            maxResults=30,
             singleEvents=True,
             orderBy='startTime'
         ).execute()
         events = events_result.get('items', [])
         if not events:
-            return "예정된 일정 없음"
+            return "예정된 일정이 없습니다."
         
-        res = [f"- {e.get('summary', '제목 없음')} ({e['start'].get('dateTime', e['start'].get('date'))})" for e in events]
+        res = []
+        for e in events:
+            start_val = e['start'].get('dateTime', e['start'].get('date', ''))
+            end_val = e['end'].get('dateTime', e['end'].get('date', ''))
+            res.append(f"- 제목: {e.get('summary', '제목 없음')} | 시작: {start_val} | 종료: {end_val}")
         return "\n".join(res)
     except Exception as e:
         return f"일정 조회 실패: {str(e)}"
@@ -179,7 +183,7 @@ def get_today_calendar_events_str() -> str:
 
 def delete_calendar_event(query_title: str) -> str:
     try:
-        now = datetime.utcnow().isoformat() + 'Z'
+        now = (datetime.now() - timedelta(days=1)).isoformat() + 'Z'
         events_result = service.events().list(
             calendarId=calendar_id,
             timeMin=now,
@@ -271,26 +275,26 @@ def direct_delete_memo(user_text: str):
     conn.close()
     return False, "어떤 메모를 지워야 할지 못 찾겠어. 다시 말해줘!"
 
-# 6. 대화 속 자동 기억 분석기 (대화 메모 고도화)
+# 6. 백그라운드 자동 메모 감지 (안전 딜레이 적용)
 def auto_detect_and_remember(user_prompt: str):
     if len(user_prompt.strip()) < 5:
         return
-    trigger_ignore = ["브리핑", "날씨", "몇 시", "삭제", "지워", "안녕"]
+    trigger_ignore = ["브리핑", "날씨", "몇 시", "삭제", "지워", "안녕", "확인해줘", "일정"]
     if any(k in user_prompt for k in trigger_ignore):
         return
 
     classify_prompt = f"""
-사용자의 말에서 기억해둘 만한 [할 일, 약속, 장보기, 창작 아이디어, 영감, 건강/기억할 일상]이 있는지 판단해줘.
+사용자의 말에서 기억해둘 만한 [할 일, 장보기, 창작 아이디어, 약속]이 있는지 판단해줘.
 사용자 발화: "{user_prompt}"
 
-기억할 가치가 있다면 반드시 아래 형식의 JSON으로만 답해. 기억할 가치가 없다면 NONE 이라고만 답해.
-{{"should_save": true, "category": "할일 또는 아이디어 또는 일상기록", "summary": "간결하게 정리된 핵심 내용"}}
+기억할 가치가 있다면 반드시 아래 형식의 JSON으로만 답해. 없으면 NONE 이라고만 답해.
+{{"should_save": true, "category": "할일 또는 아이디어 또는 일상기록", "summary": "간결하게 정리된 내용"}}
 """
     try:
         active_key = api_keys[st.session_state.get("key_index", 0)]
         temp_client = genai.Client(api_key=active_key)
         res = temp_client.models.generate_content(
-            model="gemini-3.6-flash",
+            model="gemini-2.5-flash",
             contents=classify_prompt
         )
         ans = res.text.strip()
@@ -304,12 +308,13 @@ def auto_detect_and_remember(user_prompt: str):
 
 custom_tools = [add_calendar_event, get_calendar_events, delete_calendar_event, save_archive_note, search_archive_notes]
 
-# 7. Gemini 로테이션
+# 7. Gemini 로테이션 엔진 (도구 충돌 방지 및 안전 예외처리)
 if "key_index" not in st.session_state:
     st.session_state.key_index = 0
 
 def generate_with_key_rotation(contents, system_prompt, use_tools=True, enable_search=False):
     total = len(api_keys)
+    last_error = ""
     for _ in range(total):
         active_key = api_keys[st.session_state.key_index]
         st.session_state.key_index = (st.session_state.key_index + 1) % total
@@ -317,30 +322,33 @@ def generate_with_key_rotation(contents, system_prompt, use_tools=True, enable_s
         try:
             temp_client = genai.Client(api_key=active_key)
             tools_payload = []
+            # 커스텀 함수 도구와 구글 검색 도구는 상호 배타적으로 처리
             if use_tools:
                 tools_payload.extend(custom_tools)
-            if enable_search:
+            elif enable_search:
                 tools_payload.append({"google_search": {}})
 
             cfg = types.GenerateContentConfig(
                 tools=tools_payload if tools_payload else None,
                 system_instruction=system_prompt,
-                temperature=0.3
+                temperature=0.2
             )
             response = temp_client.models.generate_content(
-                model="gemini-3.6-flash",
+                model="gemini-2.5-flash",
                 contents=contents,
                 config=cfg
             )
             return response.text if response.text else "처리를 완료했어."
         except Exception as ex:
-            if "429" in str(ex) or "RESOURCE_EXHAUSTED" in str(ex):
+            last_error = str(ex)
+            if "429" in last_error or "RESOURCE_EXHAUSTED" in last_error:
+                time.sleep(0.5)
                 continue
-            return f"오류 발생: {str(ex)}"
+            return f"일시적인 오류가 발생했어: {last_error}"
 
-    return "API 사용량이 일시적으로 찼어. 잠시만 이따가 다시 불러줘!"
+    return f"API 연결이 원활하지 않아. (원인: {last_error if last_error else '할당량 초과'})"
 
-# 8. 초고속 데일리 브리핑 (맥락 기억 + 푸시 발송)
+# 8. 데일리 브리핑
 def create_daily_briefing() -> str:
     weather_info = get_current_weather()
     today_events = get_today_calendar_events_str()
@@ -374,12 +382,11 @@ def create_daily_briefing() -> str:
     system_prompt = "너는 친근하고 따뜻한 비서 태민이야. 편안한 반말로 군더더기 없이 짧고 다정하게 말해줘."
     briefing_text = generate_with_key_rotation(briefing_prompt, system_prompt, use_tools=False, enable_search=False)
     
-    # 스마트폰 팝업 푸시 발송
+    # 푸시 알림 전송
     send_push_notification("☀️ 태민이의 오늘 아침 브리핑", briefing_text)
-    
     return briefing_text
 
-# 9. 사이드바 설정 (음성 안내, 푸시 테스트, 아카이브)
+# 9. 사이드바 설정 (음성 상태 안내 및 아카이브)
 with st.sidebar:
     st.header("🎙️ 비서 목소리")
     st.success("✨ 맞춤 복제 보이스(태민) 연결됨")
@@ -489,7 +496,7 @@ elif text_input:
 elif active_image and not st.session_state.get("image_processed", False):
     current_user_prompt = "이 사진 보고 어떤 게 있는지, 식재료라면 가볍게 해먹을 수 있는 요리 추천해줘!"
 
-# 11. 요청 처리 및 ElevenLabs 음성 출력
+# 11. 요청 처리 및 음성 출력
 if current_user_prompt:
     user_msg_entry = {"role": "user", "content": current_user_prompt}
     img_bytes = None
@@ -509,12 +516,12 @@ if current_user_prompt:
     is_briefing_cmd = any(k in current_user_prompt for k in ["브리핑", "오늘 요약", "아침 브리핑", "일정 브리핑"])
     is_delete_cmd = any(k in current_user_prompt for k in ["삭제", "지워", "취소"]) and any(k in current_user_prompt for k in ["메모", "할일", "보관"])
 
-    # 백그라운드 대화 메모 자동 추출 동작
+    # 질문 처리 전 백그라운드 자동 메모 추출 (단, 메인 요청과 시간차 확보)
     if not is_briefing_cmd and not is_delete_cmd:
         auto_detect_and_remember(current_user_prompt)
 
     with st.chat_message("assistant"):
-        with st.spinner("태민이가 목소리로 준비하고 있어..."):
+        with st.spinner("태민이가 확인하고 있어..."):
             if is_briefing_cmd:
                 reply_text = create_daily_briefing()
             elif is_delete_cmd:
@@ -526,10 +533,8 @@ if current_user_prompt:
                     f"존댓말 쓰지 말고, 편안하고 다정한 친구 같은 반말로 자연스럽게 답해줘. "
                     f"음성으로 들을 때 편하도록 특수문자나 마크다운 기호는 쓰지 말고 짧고 간결하게 말해줘. "
                     f"현재 시간은 {now_str} (한국 표준시)야. "
-                    f"- 일정 등록/조회/삭제: 구글 캘린더 도구 사용 "
-                    f"- 메모/할 일 저장 및 조회: archive 도구 사용 "
-                    f"- 최신 뉴스, 실시간 검색, 외부 정보: 구글 검색 도구 활용 "
-                    f"- 사진이 주어지면: 식재료 분석 및 가벼운 메뉴 추천, 문서 핵심 요약 등을 세심하게 분석"
+                    f"- 일정 등록/조회/삭제 요청이 오면 반드시 캘린더 도구를 사용해 정확한 일정을 확인하고 답해. "
+                    f"- 메모/할 일 저장 및 조회는 archive 도구를 사용해."
                 )
 
                 if img_bytes:
@@ -538,13 +543,14 @@ if current_user_prompt:
                         types.Part.from_bytes(data=img_bytes, mime_type=mime_type),
                         current_user_prompt
                     ]
-                    reply_text = generate_with_key_rotation(contents_payload, system_prompt, use_tools=False, enable_search=True)
+                    reply_text = generate_with_key_rotation(contents_payload, system_prompt, use_tools=False, enable_search=False)
                 else:
-                    reply_text = generate_with_key_rotation(current_user_prompt, system_prompt, use_tools=True, enable_search=True)
+                    # 함수 도구(캘린더, 메모) 단독 활성화 (검색 충돌 원천 차단)
+                    reply_text = generate_with_key_rotation(current_user_prompt, system_prompt, use_tools=True, enable_search=False)
 
             st.write(reply_text)
 
-            # ElevenLabs 복제 보이스 재생
+            # ElevenLabs 음성 출력
             audio_bytes = generate_elevenlabs_audio(reply_text)
             if audio_bytes:
                 st.audio(audio_bytes, format="audio/mp3", autoplay=True)
