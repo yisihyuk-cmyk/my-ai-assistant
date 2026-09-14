@@ -18,6 +18,10 @@ if "key_index" not in st.session_state:
     st.session_state.key_index = 0
 
 def generate_with_key_rotation(contents, system_prompt, use_tools=True):
+    # 세션 상태 안전 초기화
+    if "key_index" not in st.session_state:
+        st.session_state.key_index = 0
+
     total = len(API_KEYS)
     last_err = ""
     for _ in range(total):
@@ -54,8 +58,9 @@ def auto_detect_and_remember(user_prompt: str):
 {{"should_save": true, "category": "할일 또는 영감창작 또는 일상기록", "summary": "내용"}}
 발화: "{user_prompt}" """
 
-    try:
-        client = genai.Client(api_key=API_KEYS[st.session_state.key_index])
+   try:
+        current_idx = st.session_state.get("key_index", 0)
+        client = genai.Client(api_key=API_KEYS[current_idx])
         res = client.models.generate_content(model="gemini-3.6-flash", contents=prompt)
         ans = res.text.strip()
         if "{" in ans and "should_save" in ans:
