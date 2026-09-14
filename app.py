@@ -39,7 +39,6 @@ api_keys = [k.strip() for k in raw_keys.split(",") if k.strip()]
 calendar_id = st.secrets.get("CALENDAR_ID", "primary")
 service_account_str = st.secrets.get("GCP_SERVICE_ACCOUNT_JSON")
 
-# ElevenLabs & 알림 설정
 eleven_api_key = st.secrets.get("ELEVENLABS_API_KEY", "")
 eleven_voice_id = st.secrets.get("ELEVENLABS_VOICE_ID", "gDx7aX4UOQMthJevd64d")
 ntfy_topic = st.secrets.get("NTFY_TOPIC", "")
@@ -57,7 +56,6 @@ service = build("calendar", "v3", credentials=creds)
 
 # 3. ElevenLabs 실시간 음성 생성 함수 (발음 교정 포함)
 def fix_pronunciation(text: str) -> str:
-    # 혹시라도 음성 인식기가 오인식하기 쉬운 발음들을 정확한 이름으로 자동 보정
     misheard_names = ["정숙", "영수", "진수", "정서", "점수", "정선"]
     for wrong in misheard_names:
         text = text.replace(wrong, "정수")
@@ -282,7 +280,7 @@ def direct_delete_memo(user_text: str):
     conn.close()
     return False, "어떤 메모를 지워야 할지 못 찾겠어. 다시 말해줘!"
 
-# 6. 백그라운드 자동 메모 감지
+# 6. 백그라운드 자동 메모 감지 (영감창작 분리 강화)
 def auto_detect_and_remember(user_prompt: str):
     if len(user_prompt.strip()) < 5:
         return
@@ -291,11 +289,12 @@ def auto_detect_and_remember(user_prompt: str):
         return
 
     classify_prompt = f"""
-사용자의 말에서 기억해둘 만한 [할 일, 장보기, 창작 아이디어, 약속]이 있는지 판단해줘.
-사용자 발화: "{user_prompt}"
+사용자의 말에서 기억해둘 만한 [할 일, 장보기, 시상이나 대사 같은 창작 영감, 약속]이 있는지 분석해줘.
+발화: "{user_prompt}"
 
 기억할 가치가 있다면 반드시 아래 형식의 JSON으로만 답해. 없으면 NONE 이라고만 답해.
-{{"should_save": true, "category": "할일 또는 아이디어 또는 일상기록", "summary": "간결하게 정리된 내용"}}
+카테고리는 반드시 ["할일", "영감창작", "일상기록"] 중 하나로 지정해.
+{{"should_save": true, "category": "할일 또는 영감창작 또는 일상기록", "summary": "정리된 핵심 내용"}}
 """
     try:
         active_key = api_keys[st.session_state.get("key_index", 0)]
@@ -309,7 +308,10 @@ def auto_detect_and_remember(user_prompt: str):
             clean_json = ans[ans.find("{"):ans.rfind("}")+1]
             data = json.loads(clean_json)
             if data.get("should_save"):
-                save_archive_note(data.get("summary"), data.get("category", "일상기록"))
+                cat = data.get("category", "일상기록")
+                if "영감" in cat or "창작" in cat:
+                    cat = "영감창작"
+                save_archive_note(data.get("summary"), cat)
     except Exception:
         pass
 
@@ -354,7 +356,7 @@ def generate_with_key_rotation(contents, system_prompt, use_tools=True, enable_s
 
     return f"API 연결이 원활하지 않아. (원인: {last_error if last_error else '할당량 초과'})"
 
-# 8. 데일리 브리핑 (이름 '정수' 반영)
+# 8. 고도화된 데일리 브리핑 (이동/날씨 팁 + 주말 문화생활 리마인더)
 def create_daily_briefing() -> str:
     weather_info = get_current_weather()
     today_events = get_today_calendar_events_str()
@@ -368,7 +370,10 @@ def create_daily_briefing() -> str:
     
     now_dt = datetime.now()
     weekdays = ["월", "화", "수", "목", "금", "토", "일"]
-    date_header = f"{now_dt.month}월 {now_dt.day}일 {weekdays[now_dt.weekday()]}요일"
+    weekday_str = weekdays[now_dt.weekday()]
+    date_header = f"{now_dt.month}월 {now_dt.day}일 {weekday_str}요일"
+
+    is_near_weekend = weekday_str in ["목", "금", "토"]
 
     briefing_prompt = f"""
 너는 가장 친한 친구이자 든든한 전담 비서 '태민'이야.
@@ -380,11 +385,12 @@ def create_daily_briefing() -> str:
 - 날씨: {weather_info}
 - 오늘 캘린더 일정: {today_events}
 - 최근 메모/할 일/단상: {recent_mem_str}
+- 주말 근접 여부: {is_near_weekend}
 
-[필수 구성: 딱 3~4문장]
-1. 다정한 아침 인사(정수야, 좋은 아침! 등)와 오늘 날씨/옷차림 팁
-2. 오늘 잡힌 주요 일정과 최근 남겨둔 생각/할 일 짧게 짚어주기
-3. 아침 식사 후 약 챙겨 먹고 저녁 약도 잊지 말라는 건강 당부와 활기찬 응원
+[필수 구성 가이드: 딱 3~4문장]
+1. 정수에게 건네는 따뜻한 아침 인사와 날씨 안내 (비나 눈이 오면 안전운전/이동 주의 팁 포함)
+2. 오늘의 일정과 남겨둔 할 일을 짧게 짚어주기
+3. {"목/금/토요일이니 주말에 대학로나 문화생활 보면서 힐링할 계획 잊지 말라는 다정한 응원" if is_near_weekend else "아침 식사 후 약 챙겨 먹고 저녁 약도 잊지 말라는 건강 당부와 활기찬 응원"}
 """
     system_prompt = "너는 친근하고 따뜻한 비서 태민이야. 사용자는 정수야. 편안한 반말로 군더더기 없이 짧고 다정하게 말해줘."
     briefing_text = generate_with_key_rotation(briefing_prompt, system_prompt, use_tools=False, enable_search=False)
@@ -392,22 +398,38 @@ def create_daily_briefing() -> str:
     send_push_notification("☀️ 태민이의 오늘 아침 브리핑", briefing_text)
     return briefing_text
 
-# 9. 사이드바 설정
+# 9. 사이드바 설정 (음성 안내, 영감 메모 내보내기, 아카이브)
 with st.sidebar:
     st.header("🎙️ 비서 목소리")
     st.success("✨ 맞춤 복제 보이스(태민) 연결됨")
 
     st.write("---")
     st.header("🗂️ 아카이브 보관함")
+    
     conn = sqlite3.connect("assistant_archive.db")
     c = conn.cursor()
-    c.execute("SELECT id, category, content, created_at FROM archives ORDER BY id DESC LIMIT 20")
+    c.execute("SELECT id, category, content, created_at FROM archives ORDER BY id DESC LIMIT 30")
     recent_notes = c.fetchall()
-    conn.close()
     
+    # [영감/창작] 메모 모아 내려받기
+    c.execute("SELECT created_at, content FROM archives WHERE category='영감창작' ORDER BY id ASC")
+    creative_notes = c.fetchall()
+    conn.close()
+
+    if creative_notes:
+        export_text = "\n".join([f"[{d}] {txt}" for d, txt in creative_notes])
+        st.download_button(
+            label="📝 영감·창작 노트 다운로드 (.txt)",
+            data=export_text,
+            file_name=f"creative_notes_{datetime.now().strftime('%m%d')}.txt",
+            mime="text/plain",
+            use_container_width=True
+        )
+
     if recent_notes:
         for note_id, cat, content, date_str in recent_notes:
-            with st.expander(f"[{cat}] {content[:10]}... ({date_str})"):
+            tag_icon = "💡" if cat == "영감창작" else ("✅" if "할일" in cat else "📌")
+            with st.expander(f"{tag_icon} [{cat}] {content[:10]}... ({date_str})"):
                 st.write(f"**카테고리:** {cat}")
                 st.write(f"**내용:** {content}")
                 st.caption(f"기록 시간: {date_str}")
@@ -434,7 +456,7 @@ if not img_base64:
 
 if img_base64:
     header_html = f"""
-    <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 24px;">
+    <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 20px;">
         <img src="data:image/jpeg;base64,{img_base64}" 
              style="width: 44px; height: 44px; border-radius: 50%; object-fit: cover; flex-shrink: 0; box-shadow: 0 2px 6px rgba(0,0,0,0.15);" />
         <span style="font-size: 1.6rem; font-weight: 700; white-space: nowrap; letter-spacing: -0.5px;">2int의 AI 비서 태민</span>
@@ -442,7 +464,7 @@ if img_base64:
     """
 else:
     header_html = """
-    <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 24px;">
+    <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 20px;">
         <span style="font-size: 2rem;">🤖</span>
         <span style="font-size: 1.6rem; font-weight: 700; white-space: nowrap; letter-spacing: -0.5px;">2int의 AI 비서 태민</span>
     </div>
@@ -455,12 +477,15 @@ if "messages" not in st.session_state:
 if "processed_voice_history" not in st.session_state:
     st.session_state.processed_voice_history = set()
 
-# 상단 빠른 브리핑 버튼
-col_b1, col_b2 = st.columns([2, 5])
+# 상단 데일리 브리핑 버튼 & 음소거 토글
+col_b1, col_b2 = st.columns([3, 2], vertical_alignment="center")
 trigger_briefing = False
 with col_b1:
-    if st.button("☀️ 오늘의 데일리 브리핑 듣기", use_container_width=True):
+    if st.button("☀️ 오늘의 데일리 브리핑", use_container_width=True):
         trigger_briefing = True
+with col_b2:
+    # 켜두면 어떤 상황에서도 음성을 생성하지 않음 (크레딧 100% 절약)
+    mute_mode = st.toggle("🔇 텍스트만 (음성 끄기)", value=False)
 
 # 대화 내용 출력
 for msg in st.session_state.messages:
@@ -473,18 +498,16 @@ for msg in st.session_state.messages:
 
 st.write("---")
 
-# 📷 카메라 / 사진 업로드
-# 📷 카메라 / 사진 업로드 (배터리 보호 최적화)
+# 📷 카메라 / 사진 업로드 (배터리 보호 토글 적용)
 camera_img = None
 file_img = None
 
-with st.expander("📷 사진 촬영 또는 이미지 업로드", expanded=False):
+with st.expander("📷 식재료, 사진 촬영 또는 업로드", expanded=False):
     tab_cam, tab_file = st.tabs(["📸 스마트폰 즉석 촬영", "🖼️ 갤러리 사진 선택"])
     with tab_cam:
-        # 평소에는 카메라 센서를 꺼두고, 버튼을 켤 때만 브라우저 마운트
-        use_camera = st.checkbox("카메라 켜기", key="camera_toggle")
+        use_camera = st.checkbox("카메라 센서 켜기", key="camera_toggle")
         if use_camera:
-            camera_img = st.camera_input("냉장고, 영수증, 서류, 약 봉투 등을 찍어봐")
+            camera_img = st.camera_input("냉장고, 재료 등을 찍어봐")
     with tab_file:
         file_img = st.file_uploader("사진 파일 선택", type=["jpg", "jpeg", "png"])
 
@@ -495,22 +518,25 @@ col1, col2 = st.columns([1, 4])
 with col1:
     voice_input = speech_to_text(language="ko", start_prompt="🎤 말하기", stop_prompt="⏹️ 녹음 완료", key="mic_btn")
 
-text_input = st.chat_input("일정, 질문, 냉장고 추천 등 무엇이든 편하게 말해줘...")
+text_input = st.chat_input("일정, 질문, 식재료 추천 등 무엇이든 편하게 말해줘...")
 
-# 입력 처리: 키보드 입력(text_input)을 최우선으로 체크하도록 수정
+# 입력 방식 감지 플래그 (텍스트 타이핑 여부)
 current_user_prompt = None
+is_typing_input = False
+
 if trigger_briefing:
     current_user_prompt = "오늘 데일리 브리핑 시작해줘"
 elif text_input:
     current_user_prompt = text_input
+    is_typing_input = True  # 타이핑으로 입력함 -> 기본적으로 음성 생성 건너뜀
 elif voice_input:
     if voice_input not in st.session_state.processed_voice_history:
         st.session_state.processed_voice_history.add(voice_input)
         current_user_prompt = voice_input
 elif active_image and not st.session_state.get("image_processed", False):
-    current_user_prompt = "이 사진 보고 어떤 게 있는지, 식재료라면 가볍게 해먹을 수 있는 요리 추천해줘!"
+    current_user_prompt = "이 사진 보고 어떤 식재료가 있는지, 두부나 양배추처럼 담백하게 전자레인지나 밥솥으로 해먹을 수 있는 깔끔한 메뉴 추천해줘!"
 
-# 11. 요청 처리 및 음성 출력
+# 11. 요청 처리 및 지능형 음성 출력
 if current_user_prompt:
     user_msg_entry = {"role": "user", "content": current_user_prompt}
     img_bytes = None
@@ -530,28 +556,27 @@ if current_user_prompt:
     is_briefing_cmd = any(k in current_user_prompt for k in ["브리핑", "오늘 요약", "아침 브리핑", "일정 브리핑"])
     is_delete_cmd = any(k in current_user_prompt for k in ["삭제", "지워", "취소"]) and any(k in current_user_prompt for k in ["메모", "할일", "보관"])
 
-    # 백그라운드 자동 메모 추출
     if not is_briefing_cmd and not is_delete_cmd:
         auto_detect_and_remember(current_user_prompt)
 
     with st.chat_message("assistant"):
-        with st.spinner("태민이가 생각하고 있어..."):
+        with st.spinner("태민이가 확인하고 있어..."):
             if is_briefing_cmd:
                 reply_text = create_daily_briefing()
             elif is_delete_cmd:
                 _, reply_text = direct_delete_memo(current_user_prompt)
             else:
                 now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                # 두뇌 프롬프트에 사용자의 이름 '정수'를 확고하게 고정
                 system_prompt = (
                     f"너의 이름은 '태민'이야. 가장 친하고 다정한 개인 전담 AI 비서야. "
                     f"사용자의 진짜 이름은 '이정수'이며, 호칭할 때는 항상 다정하게 '정수야' 또는 '정수'라고 불러줘. "
                     f"사용자가 음성 인식 오타로 이름이 이상하게 찍혀 들어오더라도 무시하고 상대방을 무조건 '정수'라고 불러. "
-                    f"존댓말 쓰지 말고 편안한 반말로 짧고 명확하게 대답해줘. "
+                    f"존댓말 쓰지 말고 편안하고 다정한 반말로 짧고 명확하게 대답해줘. "
                     f"음성으로 들을 때 편하도록 특수문자나 마크다운 기호는 쓰지 마. "
                     f"현재 시간은 {now_str} (한국 표준시)야. "
                     f"- 일정 등록/조회/삭제 요청이 오면 반드시 캘린더 도구를 사용해. "
-                    f"- 메모/할 일 저장은 archive 도구를 사용해."
+                    f"- 메모/할 일 저장은 archive 도구를 사용해. "
+                    f"- 식단이나 식재료 질문/사진 분석 시: 고기보다는 두부, 양배추, 가벼운 채소 중심의 담백하고 자극 없는 전자레인지/간편 조리법을 우선 제안해."
                 )
 
                 if img_bytes:
@@ -566,10 +591,19 @@ if current_user_prompt:
 
             st.write(reply_text)
 
-            # ElevenLabs 음성 출력
-            audio_bytes = generate_elevenlabs_audio(reply_text)
-            if audio_bytes:
-                st.audio(audio_bytes, format="audio/mp3", autoplay=True)
-                st.session_state.messages.append({"role": "assistant", "content": reply_text, "audio": audio_bytes})
+            # 음성 생성 조건 판단:
+            # 1) '텍스트만(음소거)' 토글이 켜져 있으면 음성 미생성
+            # 2) 키보드로 글을 타이핑해서 보낸 경우도 조용한 상황으로 간주하여 음성 미생성
+            # 3) 마이크 음성 대화나 브리핑 요청일 때만 ElevenLabs 호출 (토큰 대폭 절약)
+            should_speak = (not mute_mode) and (not is_typing_input or trigger_briefing)
+
+            if should_speak:
+                audio_bytes = generate_elevenlabs_audio(reply_text)
+                if audio_bytes:
+                    st.audio(audio_bytes, format="audio/mp3", autoplay=True)
+                    st.session_state.messages.append({"role": "assistant", "content": reply_text, "audio": audio_bytes})
+                else:
+                    st.session_state.messages.append({"role": "assistant", "content": reply_text})
             else:
+                # 텍스트만 기록하고 음성 API 토큰 0 소모
                 st.session_state.messages.append({"role": "assistant", "content": reply_text})
