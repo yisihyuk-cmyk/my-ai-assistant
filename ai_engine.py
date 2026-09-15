@@ -30,7 +30,7 @@ def get_api_keys_pool():
     if not raw_keys:
         raise ValueError("❌ GEMINI_API_KEY를 찾을 수 없습니다. Secrets 설정을 확인해주세요.")
 
-    # 쉼표(,)를 기준으로 분리하여 공백/따옴표 제거
+    # 쉼표(,) 기준으로 분리하여 공백/따옴표 제거
     keys = [k.strip().strip("'").strip('"') for k in raw_keys.split(",") if k.strip()]
     if not keys:
         raise ValueError("❌ 등록된 유효한 Gemini API Key가 없습니다.")
@@ -45,12 +45,11 @@ def get_next_api_key():
     current_idx = st.session_state["gemini_rr_index"] % len(keys)
     selected_key = keys[current_idx]
     
-    # 다음 호출을 위해 인덱스 순환
     st.session_state["gemini_rr_index"] = (current_idx + 1) % len(keys)
     return selected_key
 
 def call_gemini_rest(prompt_text):
-    """라운드로빈 키 분배 및 만약의 경우 다른 키로 즉시 재시도(Failover)"""
+    """구글 AI Studio 표준 헤더(x-goog-api-key)를 이용한 라운드로빈 호출"""
     keys = get_api_keys_pool()
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent"
     
@@ -68,21 +67,15 @@ def call_gemini_rest(prompt_text):
     
     last_error = None
     
-    # 등록된 키 풀을 순서대로 시도
+    # 등록된 4개의 키를 차례대로 순환 시도
     for _ in range(len(keys)):
         api_key = get_next_api_key()
         
-        # AQ. 신규 키와 AIza 구형 키 헤더 규격 대응
-        if api_key.startswith("AQ."):
-            headers = {
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {api_key}"
-            }
-        else:
-            headers = {
-                "Content-Type": "application/json",
-                "x-goog-api-key": api_key
-            }
+        # Bearer를 절대 쓰지 않고 표준 x-goog-api-key 헤더만 사용
+        headers = {
+            "Content-Type": "application/json",
+            "x-goog-api-key": api_key
+        }
         
         try:
             res = requests.post(url, headers=headers, json=payload, timeout=20)
@@ -97,7 +90,6 @@ def call_gemini_rest(prompt_text):
             else:
                 err_msg = res.json().get("error", {}).get("message", res.text)
                 last_error = f"{res.status_code} - {err_msg}"
-                # Rate limit(429)이나 일시적 오류 시 다음 키로 넘어가 재시도
                 continue
         except Exception as e:
             last_error = str(e)
