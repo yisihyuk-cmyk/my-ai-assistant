@@ -5,8 +5,12 @@ from datetime import datetime, timedelta
 import streamlit as st
 import services
 
-# 가장 호환성이 높은 모델명 (v1beta에서는 gemini-2.0-flash 또는 gemini-1.5-flash-latest)
-MODEL_NAME = "gemini-2.0-flash"
+# 가장 안정적인 최신 공식 모델 우선순위 목록
+CANDIDATE_MODELS = [
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
+    "gemini-2.0-flash-001"
+]
 
 SYSTEM_PROMPT = """
 당신은 다정하고 꼼꼼한 1인 전담 AI 비서 '태민이'입니다.
@@ -49,9 +53,8 @@ def get_next_api_key():
     return selected_key
 
 def call_gemini_rest(prompt_text):
-    """404 방지: 2.0-flash 기본 호출 후 실패 시 1.5-flash-latest 자동 폴백"""
+    """표준 모델 목록을 순회하며 정상 응답을 반환하는 안전한 호출"""
     keys = get_api_keys_pool()
-    models_to_try = [MODEL_NAME, "gemini-1.5-flash-latest"]
     
     payload = {
         "systemInstruction": {
@@ -67,7 +70,7 @@ def call_gemini_rest(prompt_text):
     
     last_error = None
     
-    # 키 풀 순환
+    # 1. 키 풀 순환
     for _ in range(len(keys)):
         api_key = get_next_api_key()
         headers = {
@@ -75,7 +78,8 @@ def call_gemini_rest(prompt_text):
             "x-goog-api-key": api_key
         }
         
-        for model in models_to_try:
+        # 2. 후보 모델 순환 (404 방지)
+        for model in CANDIDATE_MODELS:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
             try:
                 res = requests.post(url, headers=headers, json=payload, timeout=20)
@@ -88,16 +92,17 @@ def call_gemini_rest(prompt_text):
                             return parts[0].get("text", "")
                     return "답변을 받아오지 못했습니다."
                 else:
-                    err_msg = res.json().get("error", {}).get("message", res.text)
-                    last_error = f"{res.status_code} - {err_msg}"
-                    # 404면 다음 모델명 시도, 그 외 오류면 다음 키로
+                    err_data = res.json().get("error", {})
+                    err_msg = err_data.get("message", res.text)
+                    last_error = f"{res.status_code} ({model}) - {err_msg}"
+                    # 404면 다음 모델 시도, 그 외 오류면 다음 키로 이동
                     if res.status_code != 404:
                         break
             except Exception as e:
                 last_error = str(e)
                 break
                 
-    raise Exception(f"모든 API 키/모델 호출 실패. 마지막 오류: {last_error}")
+    raise Exception(f"모든 키/모델 호출 실패. 마지막 상세: {last_error}")
 
 def generate_daily_briefing():
     """오늘의 일정, 대기 중인 [할 일], 이동 권장 출발 시각을 종합한 아침 브리핑 생성"""
