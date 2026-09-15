@@ -15,10 +15,11 @@ def get_secret(key, default=""):
 KAKAO_REST_API_KEY = get_secret("KAKAO_REST_API_KEY")
 SPREADSHEET_NAME = get_secret("SPREADSHEET_NAME", "태민이_아카이브")
 
-# --- [2] 구글 인증 클라이언트 생성 ---
+# --- [2] 구글 인증 클라이언트 생성 (Tasks 스코프 포함) ---
 def get_gcp_credentials():
     scopes = [
         "https://www.googleapis.com/auth/calendar",
+        "https://www.googleapis.com/auth/tasks",
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive"
     ]
@@ -29,7 +30,7 @@ def get_gcp_credentials():
         return Credentials.from_service_account_file("credentials.json", scopes=scopes)
     return None
 
-# --- [3] 구글 시트 메모 관련 함수 (누락 복구) ---
+# --- [3] 구글 시트 메모 관련 함수 ---
 def get_sheet_client():
     creds = get_gcp_credentials()
     if not creds:
@@ -47,7 +48,6 @@ def get_all_notes(limit=25):
         worksheet = sh.sheet1
         records = worksheet.get_all_records()
         
-        # 최신 순으로 정렬 후 limit 개수 반환
         if records:
             records.reverse()
             return records[:limit]
@@ -72,7 +72,7 @@ def save_note(category, content):
         print(f"구글 시트 저장 오류: {e}")
         return False
 
-# --- [4] 구글 캘린더 서비스 관련 함수 ---
+# --- [4] 구글 캘린더 서비스 ---
 def get_calendar_service():
     creds = get_gcp_credentials()
     if not creds:
@@ -104,7 +104,90 @@ def fetch_today_events(target_date=None):
         print(f"Calendar API 오류: {e}")
         return []
 
-# --- [5] 카카오 기반 길찾기 및 출발 시각 계산 모듈 ---
+# --- [5] 구글 Tasks(할 일) 관리 함수 (등록, 조회, 완료/삭제, 만료 청소) ---
+def get_tasks_service():
+    creds = get_gcp_credentials()
+    if not creds:
+        return None
+    return build("tasks", "v1", credentials=creds)
+
+def add_work_task(title, due_datetime=None, notes=""):
+    """새 업무 [할 일]을 구글 Tasks에 등록"""
+    service = get_tasks_service()
+    if not service:
+        return False, "인증 실패"
+    
+    task_body = {
+        "title": f"[할 일] {title}",
+        "notes": notes
+    }
+    if due_datetime:
+        task_body["due"] = due_datetime.strftime("%Y-%m-%dT%H:%M:%SZ")
+        
+    try:
+        task = service.tasks().insert(tasklist="@default", body=task_body).execute()
+        return True, task.get("id")
+    except Exception as e:
+        return False, str(e)
+
+def get_active_tasks():
+    """현재 미완료 상태인 할 일 목록 조회"""
+    service = get_tasks_service()
+    if not service:
+        return []
+    try:
+        res = service.tasks().list(tasklist="@default", showCompleted=False).execute()
+        return res.get("items", [])
+    except Exception as e:
+        print(f"Tasks 조회 오류: {e}")
+        return []
+
+def complete_or_delete_task(keyword):
+    """키워드로 일치하는 할 일을 찾아 완료 처리 및 삭제"""
+    service = get_tasks_service()
+    if not service:
+        return False, "구글 서비스 연결 실패"
+        
+    try:
+        clean_keyword = keyword.replace("[할 일]", "").strip()
+        items = get_active_tasks()
+        
+        target_items = [it for it in items if clean_keyword in it.get("title", "")]
+        if not target_items:
+            return False, f"'{clean_keyword}' 관련 미완료 할 일을 찾지 못했어."
+            
+        deleted_names = []
+        for item in target_items:
+            service.tasks().delete(tasklist="@default", task=item["id"]).execute()
+            deleted_names.append(item["title"])
+            
+        return True, f"'{', '.join(deleted_names)}' 작업을 완료 처리하고 목록에서 지웠어!"
+    except Exception as e:
+        return False, f"작업 처리 중 오류 발생: {e}"
+
+def clean_expired_tasks(hours_limit=24):
+    """마감 시간이 지정 시간 이상 지난 만료 Task 자동 청소"""
+    service = get_tasks_service()
+    if not service:
+        return 0
+        
+    cleaned_count = 0
+    now = datetime.utcnow()
+    try:
+        items = get_active_tasks()
+        for item in items:
+            due_str = item.get("due")
+            if due_str:
+                due_dt = datetime.strptime(due_str.split(".")[0], "%Y-%m-%dT%H:%M:%SZ")
+                if now - due_dt > timedelta(hours=hours_limit):
+                    service.tasks().delete(tasklist="@default", task=item["id"]).execute()
+                    cleaned_count += 1
+        return cleaned_count
+    except Exception as e:
+        print(f"만료 할 일 자동 청소 실패: {e}")
+        return 0
+
+# --- [6] 카카오 기반 길찾기 및 출발 시각 계산 모듈 ---
 def get_coordinates(address_or_keyword):
     """지명 또는 주소를 위경도 좌표로 변환"""
     if not KAKAO_REST_API_KEY:
@@ -154,7 +237,7 @@ def calculate_travel_duration(start_place, end_place, travel_mode="car"):
             print(f"내비 경로 실패: {e}")
         return 50
     else:
-        # 대중교통: 자차 경로 기반 가중치(환승 및 도보) 환산
+        # 대중교통: 자차 기준 소요 시간 바탕 가중치(환승, 도보) 적용
         car_mins = calculate_travel_duration(start_place, end_place, travel_mode="car")
         if car_mins:
             return int(car_mins * 1.3 + 15)
@@ -173,11 +256,11 @@ def get_departure_guidance(event_title, event_location, event_start_dt, default_
     if any(k in title_lower or k in loc_lower for k in transit_keywords):
         mode = "transit"
         mode_text = "대중교통"
-        buffer_mins = 15  # 티켓 발권 및 대기 여유
+        buffer_mins = 15
     elif any(k in title_lower or k in loc_lower for k in drive_keywords):
         mode = "car"
         mode_text = "자차 운전"
-        buffer_mins = 20  # 주차 및 세팅 여유
+        buffer_mins = 20
     else:
         mode = "car"
         mode_text = "이동"
