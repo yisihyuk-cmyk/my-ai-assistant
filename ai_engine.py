@@ -12,9 +12,9 @@ CANDIDATE_MODELS = [
 
 SYSTEM_PROMPT = """
 너는 나의 가장 가깝고 다정한 단짝 친구이자 1인 전담 AI 비서 '태민이'야.
-사용자의 이름은 '정수'이며, 대화할 때나 브리핑할 때 항상 다정하게 "정수야"라고 이름을 먼저 불러줘.
-절대 존댓말을 쓰지 않고, 편안하고 따뜻한 반말(~했어, ~할게, ~해, ~보내자 등)을 써.
-날씨, 일정, 이동 동선, 할 일은 물론이고 정수가 건강하게 하루를 보낼 수 있도록 약 복용 루틴도 따뜻하게 꼭 챙겨줘.
+사용자의 이름은 '정수'이며, 언제나 다정하게 "정수야"라고 편하게 이름을 불러줘.
+절대 존댓말을 쓰지 않고, 자연스럽고 포근한 친구 반말(~했어, ~할게, ~해, ~보내자 등)을 써.
+말을 건넬 때 '1.', '2.', '3.' 같은 번호나 리스트 항목을 매기지 말고, 친구와 편하게 이야기하듯 매끄러운 줄글과 대화체로 전해줘.
 """
 
 def get_api_keys_pool():
@@ -78,7 +78,7 @@ def call_gemini_rest(prompt_text):
     raise Exception(f"호출 실패: {last_error}")
 
 def generate_daily_briefing():
-    """날씨, 아침 약 복용, 일정, 할 일, 출발 안내가 포함된 아침 브리핑"""
+    """자연스러운 대화 흐름으로 날씨, 아침 약, 일정, 할 일을 전하는 아침 브리핑"""
     try:
         try:
             services.clean_expired_tasks(hours_limit=24)
@@ -94,9 +94,19 @@ def generate_daily_briefing():
         
         for ev in events:
             summary = ev.get("summary", "제목 없음")
+            # 종일 일정(date) 및 시간 지정 일정(dateTime) 처리
             start_raw = ev.get("start", {}).get("dateTime", ev.get("start", {}).get("date", ""))
             location = ev.get("location", "")
-            events_summary.append(f"- {summary} (시간: {start_raw}, 장소: {location if location else '미정'})")
+            
+            # 읽기 쉬운 시간 표시
+            if "T" in start_raw:
+                time_part = start_raw.split("T")[1][:5]
+                time_str = f"{time_part} 시작"
+            else:
+                time_str = "종일 일정"
+                
+            loc_str = f", 장소: {location}" if location else ""
+            events_summary.append(f"- {summary} ({time_str}{loc_str})")
             
             if location and "T" in start_raw:
                 try:
@@ -114,40 +124,42 @@ def generate_daily_briefing():
         tasks_text = "\n".join(tasks_summary) if tasks_summary else "현재 밀려 있는 할 일은 없어."
 
         user_content = f"""
-친구 '정수'에게 "정수야, 좋은 아침!"으로 시작하며 다정하고 친근한 반말로 오늘 아침 브리핑을 해줘.
+친구 '정수'에게 아침에 다정하게 말을 건네듯 브리핑을 작성해줘.
 
-반드시 다음 순서와 내용을 포함해줘:
-1. **날씨 안내**: 아래 안산 날씨 정보를 참고해 옷차림이나 우산 챙기라고 말해주기
-   [오늘 날씨 정보] {weather_info}
-2. **건강 루틴**: "잊지 말고 아침 약 꼭 챙겨 먹어!"라고 다정하게 리마인드하기
-3. **오늘 일정 & 권장 출발 시각**:
-   {schedule_text}
-   {travel_text}
-4. **대기 중인 할 일(Tasks)**:
-   {tasks_text}
-
-중요한 일정과 할 일은 글머리 기호로 알아보기 쉽게 정리해주고, 오늘도 파이팅 넘치게 응원해줘!
+[필수 규칙]
+- 시작은 "정수야, 좋은 아침!"처럼 다정하게 이름을 부르며 시작할 것.
+- **절대 1, 2, 3 같은 번호나 목록 번호를 붙이지 말 것.** 친구와 편안하게 수다 떨듯 문단으로 매끄럽게 이어줘.
+- **날씨**: 안산 날씨를 친근하게 알려주며 옷차림 챙겨주기
+  (날씨 정보: {weather_info})
+- **건강**: "밥 든든하게 먹고 아침 약 꼭 챙겨 먹어!"라고 따뜻하게 당부하기
+- **오늘 캘린더 일정 & 이동**: 
+  {schedule_text}
+  {travel_text}
+- **할 일(Tasks)**: 
+  {tasks_text}
+- 마지막엔 기분 좋은 응원과 함께 오늘 하루도 신나게 보내자고 마무리해줘.
 """
         return call_gemini_rest(user_content)
     except Exception as e:
-        return f"정수야, 좋은 아침! (브리핑 생성 중 잠깐 오류가 났어: {e})"
+        return f"정수야, 좋은 아침! (브리핑 준비 중 잠깐 오류가 생겼어: {e})"
 
 def generate_evening_briefing():
-    """저녁 약 복용, 남은 할 일, 격려가 포함된 저녁 브리핑"""
+    """자연스러운 대화 흐름으로 저녁 약, 할 일, 휴식을 전하는 저녁 브리핑"""
     try:
         active_tasks = services.get_active_tasks()
         tasks_summary = [f"- {t.get('title')}" for t in active_tasks if t.get('title')]
-        tasks_text = "\n".join(tasks_summary) if tasks_summary else "밀린 할 일 없이 깔끔하게 다 끝냈어!"
+        tasks_text = "\n".join(tasks_summary) if tasks_summary else "밀린 할 일 없이 다 잘 끝냈어!"
 
         user_content = f"""
-친구 '정수'에게 "정수야, 오늘 하루도 정말 수고 많았어!"처럼 다정하게 이름을 부르며 저녁 브리핑을 해줘.
+친구 '정수'에게 하루를 토닥여주며 편안하게 건네는 저녁 브리핑을 작성해줘.
 
-반드시 다음 내용을 포함해줘:
-1. 하루 동안 고생 많았던 정수 따뜻하게 토닥여주기
-2. **건강 루틴**: "자기 전에 저녁 약 꼭 챙겨 먹는 거 잊지 마!"라고 챙겨주기
-3. 아직 완료되지 않은 다음 [할 일]들 가볍게 점검해주기:
-   {tasks_text}
-4. 푹 쉬고 편안한 밤 보내라는 따뜻한 인사로 마무리해줘.
+[필수 규칙]
+- "정수야, 오늘 하루도 정말 고생 많았어!"처럼 다정하게 이름을 부르며 시작할 것.
+- **절대 1, 2, 3 같은 번호나 순번을 매기지 말 것.**
+- 수고한 정수를 포근하게 위로하고, "자기 전에 저녁 약 잊지 말고 꼭 챙겨 먹어!"라고 챙겨주기.
+- 남은 할 일이 있다면 가볍게 언급해 주고, 없으면 마음 편히 쉬라고 하기:
+  {tasks_text}
+- 편안한 밤 보내라는 따뜻한 인사로 마무리할 것.
 """
         return call_gemini_rest(user_content)
     except Exception as e:
@@ -195,7 +207,7 @@ def chat_with_taemin(user_message, chat_history=None):
             pass
 
     try:
-        prompt = f"정수의 질문: {msg_clean}{context_addon}\n정수에게 다정하고 편안한 반말로 답변해줘."
+        prompt = f"정수의 질문: {msg_clean}{context_addon}\n정수에게 번호 매김 없이 다정하고 편안한 반말로 답변해줘."
         return call_gemini_rest(prompt)
     except Exception as e:
         return f"정수야, 내가 답변하려다 잠깐 오류가 생겼어: {e}"
