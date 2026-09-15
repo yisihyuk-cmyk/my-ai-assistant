@@ -11,10 +11,11 @@ CANDIDATE_MODELS = [
     "gemini-2.5-flash"
 ]
 
+# 친근한 친구 말투 페르소나
 SYSTEM_PROMPT = """
-당신은 다정하고 꼼꼼한 1인 전담 AI 비서 '태민이'입니다.
-사용자의 업무 마감 및 할 일(Task), 이동 일정, 장보기 및 일상 루틴을 똑똑하게 챙깁니다.
-핵심 사항은 놓치지 않도록 직관적이고 깔끔하게 안내하며, 과도한 미사여구 없이 따뜻하고 신뢰감 있는 어투를 유지합니다.
+너는 나의 가장 가깝고 다정한 단짝 친구이자 1인 전담 AI 비서 '태민이'야.
+절대 존댓말을 쓰지 않고, 언제나 다정하고 친근한 반말(~했어, ~할게, ~해, ~보내자 등)을 사용해.
+업무 마감, 할 일(Task), 이동 일정, 장보기나 일상 루틴을 똑소리 나게 챙겨주되, 과한 미사여구 없이 편안하고 든든한 친구처럼 대화해줘.
 """
 
 def get_api_keys_pool():
@@ -52,7 +53,7 @@ def get_next_api_key():
     return selected_key
 
 def call_gemini_rest(prompt_text):
-    """권장 모델 gemini-3.6-flash 우선 호출 및 키 순환"""
+    """권장 모델 호출 및 키 라운드로빈 순환"""
     keys = get_api_keys_pool()
     
     payload = {
@@ -87,7 +88,7 @@ def call_gemini_rest(prompt_text):
                         parts = candidates[0].get("content", {}).get("parts", [])
                         if parts:
                             return parts[0].get("text", "")
-                    return "답변을 받아오지 못했습니다."
+                    return "응답을 받아오지 못했어."
                 else:
                     err_data = res.json().get("error", {})
                     err_msg = err_data.get("message", res.text)
@@ -101,7 +102,7 @@ def call_gemini_rest(prompt_text):
     raise Exception(f"모든 키/모델 호출 실패. 마지막 상세: {last_error}")
 
 def generate_daily_briefing():
-    """오늘의 일정, 대기 중인 [할 일], 이동 권장 출발 시각을 종합한 아침 브리핑 생성"""
+    """오늘의 일정, 대기 중인 [할 일], 이동 권장 출발 시각을 다정하게 전달하는 친구 브리핑"""
     try:
         try:
             services.clean_expired_tasks(hours_limit=24)
@@ -130,14 +131,14 @@ def generate_daily_briefing():
                 except Exception:
                     pass
 
-        schedule_text = "\n".join(events_summary) if events_summary else "오늘 등록된 주요 일정이 없습니다."
+        schedule_text = "\n".join(events_summary) if events_summary else "오늘 등록된 주요 일정은 없어."
         travel_text = "\n\n".join(travel_guidance_list) if travel_guidance_list else ""
         
         tasks_summary = [f"- {t.get('title')}" for t in active_tasks if t.get('title')]
-        tasks_text = "\n".join(tasks_summary) if tasks_summary else "현재 밀려 있는 할 일이 없습니다."
+        tasks_text = "\n".join(tasks_summary) if tasks_summary else "현재 밀려 있는 할 일은 없어."
 
         user_content = f"""
-다음 정보를 바탕으로 오늘 아침 브리핑 메시지를 다정하게 작성해줘:
+아래 정보들을 확인하고, 친구인 나에게 말하듯 편안하고 다정한 반말로 오늘 아침 브리핑을 해줘!
 
 [오늘 캘린더 일정]
 {schedule_text}
@@ -148,33 +149,32 @@ def generate_daily_briefing():
 [처리 대기 중인 업무/할 일 목록]
 {tasks_text}
 
-출발 시각 안내와 중요 할 일이 있다면 글머리 기호로 알아보기 쉽게 강조해줘.
+중요한 일정과 할 일, 출발 시간은 알아보기 쉽게 짚어주고, 기분 좋게 오늘 하루를 시작할 수 있게 응원해줘!
 """
         return call_gemini_rest(user_content)
     except Exception as e:
-        return f"☀️ 좋은 아침이야! (브리핑 생성 중 오류가 발생했어: {e})"
+        return f"좋은 아침이야! (브리핑 생성 중 잠깐 오류가 났어: {e})"
 
 def generate_evening_briefing():
-    """하루를 마무리하며 남은 할 일과 내일 일정을 챙기는 저녁 브리핑"""
+    """하루를 마무리하며 편안하게 건네는 저녁 친구 브리핑"""
     try:
         active_tasks = services.get_active_tasks()
         
         tasks_summary = [f"- {t.get('title')}" for t in active_tasks if t.get('title')]
-        tasks_text = "\n".join(tasks_summary) if tasks_summary else "밀린 할 일 없이 모두 완료했습니다!"
+        tasks_text = "\n".join(tasks_summary) if tasks_summary else "밀린 할 일 없이 다 끝냈어!"
 
         user_content = f"""
-오늘 저녁 마무리 브리핑을 작성해줘.
-사용자가 오늘 하루도 고생 많았다고 따뜻하게 격려해주고,
-아직 완료되지 않은 다음 [할 일]들을 점검해줘:
+오늘 하루를 마무리하는 다정한 친구 말투(반말)로 저녁 브리핑을 해줘.
+오늘도 고생 많았다고 토닥여주고, 아직 완료되지 않은 다음 [할 일]들을 편하게 짚어줘:
 {tasks_text}
-내일을 위해 편안한 쉼을 권하는 포근한 어투로 마무리해줘.
+내일을 위해 푹 쉬라는 포근하고 다정한 인사로 마무리해줘!
 """
         return call_gemini_rest(user_content)
     except Exception as e:
-        return f"🌙 오늘 하루도 정말 수고 많았어! 편안한 저녁 시간 보내. (오류: {e})"
+        return f"오늘 하루도 정말 수고 많았어! 편안한 저녁 보내. (오류: {e})"
 
 def chat_with_taemin(user_message, chat_history=None):
-    """할 일 등록/완료 처리 및 일반 대화"""
+    """할 일 등록/완료 처리 및 일상 대화"""
     msg_clean = user_message.strip()
     
     # 1. 완료/삭제 의도 감지
@@ -200,7 +200,7 @@ def chat_with_taemin(user_message, chat_history=None):
             return (
                 f"📌 **[할 일 등록 완료]**\n\n"
                 f"- 등록 내용: {msg_clean}\n"
-                f"- 구글 Tasks에 잊지 않게 저장해 뒀어.\n"
+                f"- 구글 Tasks에 잊지 않게 적어 뒀어.\n"
                 f"- 다 끝내면 **'{msg_clean.split()[0]} 끝냈어'**라고 편하게 말해줘!"
             )
 
@@ -227,4 +227,4 @@ def chat_with_taemin(user_message, chat_history=None):
         prompt = f"{msg_clean}{context_addon}"
         return call_gemini_rest(prompt)
     except Exception as e:
-        return f"태민이가 답변을 생성하는 중 오류가 발생했어: {e}"
+        return f"내가 답변하려다 잠깐 오류가 생겼어: {e}"
