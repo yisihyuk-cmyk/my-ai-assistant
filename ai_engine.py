@@ -3,18 +3,11 @@ import re
 from datetime import datetime, timedelta
 import streamlit as st
 from google import genai
+from google.genai import types
 import services
 
-# 안정적인 모델명 사용 (gemini-2.0-flash)
+# 안정적으로 지원되는 정식 모델명
 MODEL_NAME = "gemini-2.0-flash"
-
-def get_gemini_client():
-    api_key = ""
-    if hasattr(st, "secrets") and "GEMINI_API_KEY" in st.secrets:
-        api_key = st.secrets["GEMINI_API_KEY"]
-    else:
-        api_key = os.getenv("GEMINI_API_KEY", "")
-    return genai.Client(api_key=api_key)
 
 SYSTEM_PROMPT = """
 당신은 다정하고 꼼꼼한 1인 전담 AI 비서 '태민이'입니다.
@@ -22,14 +15,38 @@ SYSTEM_PROMPT = """
 핵심 사항은 놓치지 않도록 직관적이고 깔끔하게 안내하며, 과도한 미사여구 없이 따뜻하고 신뢰감 있는 어투를 유지합니다.
 """
 
+def get_gemini_client():
+    """Secrets 및 환경변수에서 키를 안전하게 추출하고 클라이언트 생성"""
+    api_key = None
+    
+    # 1. Streamlit secrets 확인
+    if hasattr(st, "secrets"):
+        if "GEMINI_API_KEY" in st.secrets:
+            api_key = st.secrets["GEMINI_API_KEY"]
+        elif "gemini" in st.secrets and "api_key" in st.secrets["gemini"]:
+            api_key = st.secrets["gemini"]["api_key"]
+        elif "GOOGLE_API_KEY" in st.secrets:
+            api_key = st.secrets["GOOGLE_API_KEY"]
+            
+    # 2. OS 환경 변수 확인
+    if not api_key:
+        api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+
+    if not api_key:
+        raise ValueError("GEMINI_API_KEY를 찾을 수 없습니다. Streamlit Secrets에 GEMINI_API_KEY를 등록해주세요.")
+
+    # 공백 제거 및 문자열 정제 후 클라이언트 반환 (GCP 토큰과의 충돌 방지)
+    clean_key = str(api_key).strip().strip("'").strip('"')
+    return genai.Client(api_key=clean_key)
+
 def generate_daily_briefing():
     """오늘의 일정, 대기 중인 [할 일], 이동 권장 출발 시각을 종합한 아침 브리핑 생성"""
     try:
-        # 오래된 만료 할 일 자동 청소 (에러 방지용 안전 호출)
+        # 만료된 오래된 할 일 자동 청소 (예외 발생 시 무시)
         try:
             services.clean_expired_tasks(hours_limit=24)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"만료 할 일 청소 건너뜀: {e}")
         
         client = get_gemini_client()
         events = services.fetch_today_events()
@@ -77,14 +94,14 @@ def generate_daily_briefing():
         response = client.models.generate_content(
             model=MODEL_NAME,
             contents=user_content,
-            config=dict(
+            config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT,
                 temperature=0.7
             )
         )
         return response.text
     except Exception as e:
-        return f"☀️ 좋은 아침이야! (브리핑 생성 중 일시적인 API 오류가 발생했어: {e})"
+        return f"☀️ 좋은 아침이야! (브리핑 생성 중 오류가 발생했어: {e})"
 
 def generate_evening_briefing():
     """하루를 마무리하며 남은 할 일과 내일 일정을 챙기는 저녁 브리핑"""
@@ -105,7 +122,7 @@ def generate_evening_briefing():
         response = client.models.generate_content(
             model=MODEL_NAME,
             contents=user_content,
-            config=dict(
+            config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT,
                 temperature=0.7
             )
@@ -171,7 +188,7 @@ def chat_with_taemin(user_message, chat_history=None):
         response = client.models.generate_content(
             model=MODEL_NAME,
             contents=prompt,
-            config=dict(
+            config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT,
                 temperature=0.7
             )
