@@ -14,8 +14,40 @@ def get_secret(key, default=""):
 
 KAKAO_REST_API_KEY = get_secret("KAKAO_REST_API_KEY")
 SPREADSHEET_NAME = get_secret("SPREADSHEET_NAME", "태민이_아카이브")
+ELEVENLABS_API_KEY = get_secret("ELEVENLABS_API_KEY")
+ELEVENLABS_VOICE_ID = get_secret("ELEVENLABS_VOICE_ID", "gDx7aX4UOQMthJevd64d")
 
-# --- [2] 구글 인증 클라이언트 생성 (Tasks 스코프 포함) ---
+# --- [2] ElevenLabs TTS 음성 생성 함수 ---
+def text_to_speech(text):
+    """ElevenLabs API를 이용해 태민이 목소리 오디오(bytes) 생성"""
+    if not ELEVENLABS_API_KEY or not ELEVENLABS_VOICE_ID:
+        return None
+        
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}"
+    headers = {
+        "xi-api-key": ELEVENLABS_API_KEY,
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "text": text,
+        "model_id": "eleven_multilingual_v2",
+        "voice_settings": {
+            "stability": 0.5,
+            "similarity_boost": 0.75
+        }
+    }
+    try:
+        res = requests.post(url, headers=headers, json=payload, timeout=20)
+        if res.status_code == 200:
+            return res.content
+        else:
+            print(f"ElevenLabs TTS 오류: {res.status_code} - {res.text}")
+            return None
+    except Exception as e:
+        print(f"ElevenLabs 호출 실패: {e}")
+        return None
+
+# --- [3] 구글 인증 클라이언트 생성 ---
 def get_gcp_credentials():
     scopes = [
         "https://www.googleapis.com/auth/calendar",
@@ -26,11 +58,15 @@ def get_gcp_credentials():
     if hasattr(st, "secrets") and "gcp_service_account" in st.secrets:
         creds_dict = dict(st.secrets["gcp_service_account"])
         return Credentials.from_service_account_info(creds_dict, scopes=scopes)
+    elif hasattr(st, "secrets") and "GCP_SERVICE_ACCOUNT_JSON" in st.secrets:
+        import json
+        creds_dict = json.loads(st.secrets["GCP_SERVICE_ACCOUNT_JSON"])
+        return Credentials.from_service_account_info(creds_dict, scopes=scopes)
     elif os.path.exists("credentials.json"):
         return Credentials.from_service_account_file("credentials.json", scopes=scopes)
     return None
 
-# --- [3] 구글 시트 메모 관련 함수 ---
+# --- [4] 구글 시트 메모 관련 함수 ---
 def get_sheet_client():
     creds = get_gcp_credentials()
     if not creds:
@@ -38,16 +74,13 @@ def get_sheet_client():
     return gspread.authorize(creds)
 
 def get_all_notes(limit=25):
-    """구글 시트에서 최신 메모 목록을 가져옵니다."""
     try:
         gc = get_sheet_client()
         if not gc:
             return []
-        
         sh = gc.open(SPREADSHEET_NAME)
         worksheet = sh.sheet1
         records = worksheet.get_all_records()
-        
         if records:
             records.reverse()
             return records[:limit]
@@ -57,12 +90,10 @@ def get_all_notes(limit=25):
         return []
 
 def save_note(category, content):
-    """구글 시트에 새 메모/할 일/영감을 저장합니다."""
     try:
         gc = get_sheet_client()
         if not gc:
             return False
-        
         sh = gc.open(SPREADSHEET_NAME)
         worksheet = sh.sheet1
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -72,7 +103,7 @@ def save_note(category, content):
         print(f"구글 시트 저장 오류: {e}")
         return False
 
-# --- [4] 구글 캘린더 서비스 ---
+# --- [5] 구글 캘린더 서비스 ---
 def get_calendar_service():
     creds = get_gcp_credentials()
     if not creds:
@@ -80,17 +111,13 @@ def get_calendar_service():
     return build("calendar", "v3", credentials=creds)
 
 def fetch_today_events(target_date=None):
-    """지정한 날짜의 캘린더 일정을 가져옵니다."""
     service = get_calendar_service()
     if not service:
         return []
-        
     if target_date is None:
         target_date = datetime.now()
-        
     start_of_day = datetime(target_date.year, target_date.month, target_date.day, 0, 0, 0).isoformat() + "Z"
     end_of_day = datetime(target_date.year, target_date.month, target_date.day, 23, 59, 59).isoformat() + "Z"
-    
     try:
         events_result = service.events().list(
             calendarId="primary",
@@ -104,7 +131,7 @@ def fetch_today_events(target_date=None):
         print(f"Calendar API 오류: {e}")
         return []
 
-# --- [5] 구글 Tasks(할 일) 관리 함수 (등록, 조회, 완료/삭제, 만료 청소) ---
+# --- [6] 구글 Tasks 관리 함수 ---
 def get_tasks_service():
     creds = get_gcp_credentials()
     if not creds:
@@ -112,18 +139,12 @@ def get_tasks_service():
     return build("tasks", "v1", credentials=creds)
 
 def add_work_task(title, due_datetime=None, notes=""):
-    """새 업무 [할 일]을 구글 Tasks에 등록"""
     service = get_tasks_service()
     if not service:
         return False, "인증 실패"
-    
-    task_body = {
-        "title": f"[할 일] {title}",
-        "notes": notes
-    }
+    task_body = {"title": f"[할 일] {title}", "notes": notes}
     if due_datetime:
         task_body["due"] = due_datetime.strftime("%Y-%m-%dT%H:%M:%SZ")
-        
     try:
         task = service.tasks().insert(tasklist="@default", body=task_body).execute()
         return True, task.get("id")
@@ -131,7 +152,6 @@ def add_work_task(title, due_datetime=None, notes=""):
         return False, str(e)
 
 def get_active_tasks():
-    """현재 미완료 상태인 할 일 목록 조회"""
     service = get_tasks_service()
     if not service:
         return []
@@ -143,34 +163,27 @@ def get_active_tasks():
         return []
 
 def complete_or_delete_task(keyword):
-    """키워드로 일치하는 할 일을 찾아 완료 처리 및 삭제"""
     service = get_tasks_service()
     if not service:
         return False, "구글 서비스 연결 실패"
-        
     try:
         clean_keyword = keyword.replace("[할 일]", "").strip()
         items = get_active_tasks()
-        
         target_items = [it for it in items if clean_keyword in it.get("title", "")]
         if not target_items:
             return False, f"'{clean_keyword}' 관련 미완료 할 일을 찾지 못했어."
-            
         deleted_names = []
         for item in target_items:
             service.tasks().delete(tasklist="@default", task=item["id"]).execute()
             deleted_names.append(item["title"])
-            
         return True, f"'{', '.join(deleted_names)}' 작업을 완료 처리하고 목록에서 지웠어!"
     except Exception as e:
         return False, f"작업 처리 중 오류 발생: {e}"
 
 def clean_expired_tasks(hours_limit=24):
-    """마감 시간이 지정 시간 이상 지난 만료 Task 자동 청소"""
     service = get_tasks_service()
     if not service:
         return 0
-        
     cleaned_count = 0
     now = datetime.utcnow()
     try:
@@ -184,19 +197,16 @@ def clean_expired_tasks(hours_limit=24):
                     cleaned_count += 1
         return cleaned_count
     except Exception as e:
-        print(f"만료 할 일 자동 청소 실패: {e}")
+        print(f"만료 할 일 청소 실패: {e}")
         return 0
 
-# --- [6] 카카오 기반 길찾기 및 출발 시각 계산 모듈 ---
+# --- [7] 카카오 길찾기 및 내비게이션 ---
 def get_coordinates(address_or_keyword):
-    """지명 또는 주소를 위경도 좌표로 변환"""
     if not KAKAO_REST_API_KEY:
         return None, None
-        
     headers = {"Authorization": f"KakaoAK {KAKAO_REST_API_KEY}"}
     url = "https://dapi.kakao.com/v2/local/search/keyword.json"
     params = {"query": address_or_keyword}
-    
     try:
         res = requests.get(url, headers=headers, params=params, timeout=5)
         if res.status_code == 200:
@@ -208,13 +218,10 @@ def get_coordinates(address_or_keyword):
     return None, None
 
 def calculate_travel_duration(start_place, end_place, travel_mode="car"):
-    """자가용 또는 대중교통 이동 소요 시간(분) 산출"""
     start_x, start_y = get_coordinates(start_place)
     end_x, end_y = get_coordinates(end_place)
-    
     if not start_x or not end_x:
         return None
-    
     if travel_mode == "car":
         url = "https://apis-navi.kakaomobility.com/v1/directions"
         headers = {
@@ -237,22 +244,16 @@ def calculate_travel_duration(start_place, end_place, travel_mode="car"):
             print(f"내비 경로 실패: {e}")
         return 50
     else:
-        # 대중교통: 자차 기준 소요 시간 바탕 가중치(환승, 도보) 적용
         car_mins = calculate_travel_duration(start_place, end_place, travel_mode="car")
         if car_mins:
             return int(car_mins * 1.3 + 15)
         return 75
 
 def get_departure_guidance(event_title, event_location, event_start_dt, default_start="안산"):
-    """일정명과 장소를 판별하여 권장 출발 시각 문자열 반환"""
     title_lower = event_title.lower()
     loc_lower = event_location.lower()
-    
-    # 1) 관극/문화생활 패턴 -> 대중교통
     transit_keywords = ["연극", "뮤지컬", "관극", "대학로", "예술", "아트센터", "극장", "공연", "티켓"]
-    # 2) 출장/컨설팅 패턴 -> 자차
     drive_keywords = ["컨설팅", "강의", "출장", "연수", "자문", "출강", "워크숍", "교육청", "학교"]
-    
     if any(k in title_lower or k in loc_lower for k in transit_keywords):
         mode = "transit"
         mode_text = "대중교통"
@@ -272,7 +273,6 @@ def get_departure_guidance(event_title, event_location, event_start_dt, default_
 
     total_need_mins = duration + buffer_mins
     departure_time = event_start_dt - timedelta(minutes=total_need_mins)
-    
     return (
         f"🚗 **이동 안내 ({mode_text})**: '{event_title}'\n"
         f"- 목적지: {event_location}\n"
