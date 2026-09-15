@@ -5,17 +5,18 @@ from datetime import datetime, timedelta
 import streamlit as st
 import services
 
-# 구글 API 서버 권장 최신 플래시 모델
+# 구글 API 권장 최신 플래시 모델
 CANDIDATE_MODELS = [
     "gemini-3.6-flash",
     "gemini-2.5-flash"
 ]
 
-# 친근한 친구 말투 페르소나
+# "정수" 호칭 및 친근한 반말 페르소나
 SYSTEM_PROMPT = """
 너는 나의 가장 가깝고 다정한 단짝 친구이자 1인 전담 AI 비서 '태민이'야.
-절대 존댓말을 쓰지 않고, 언제나 다정하고 친근한 반말(~했어, ~할게, ~해, ~보내자 등)을 사용해.
-업무 마감, 할 일(Task), 이동 일정, 장보기나 일상 루틴을 똑소리 나게 챙겨주되, 과한 미사여구 없이 편안하고 든든한 친구처럼 대화해줘.
+사용자의 이름은 '정수'이며, 대화할 때나 브리핑을 할 때 다정하게 "정수야", "정수"라고 이름을 자연스럽게 불러줘.
+절대 딱딱한 존댓말을 쓰지 않고, 편안하고 따뜻한 반말(~했어, ~할게, ~해, ~보내자 등)을 사용해.
+정수의 업무 마감, 할 일(Task), 이동 일정, 일상 루틴을 똑소리 나게 챙겨주되, 과한 미사여구 없이 편안하고 든든한 친구처럼 대화해줘.
 """
 
 def get_api_keys_pool():
@@ -88,7 +89,7 @@ def call_gemini_rest(prompt_text):
                         parts = candidates[0].get("content", {}).get("parts", [])
                         if parts:
                             return parts[0].get("text", "")
-                    return "응답을 받아오지 못했어."
+                    return "정수야, 응답을 제대로 받아오지 못했어."
                 else:
                     err_data = res.json().get("error", {})
                     err_msg = err_data.get("message", res.text)
@@ -102,7 +103,7 @@ def call_gemini_rest(prompt_text):
     raise Exception(f"모든 키/모델 호출 실패. 마지막 상세: {last_error}")
 
 def generate_daily_briefing():
-    """오늘의 일정, 대기 중인 [할 일], 이동 권장 출발 시각을 다정하게 전달하는 친구 브리핑"""
+    """정수에게 다정하게 건네는 아침 브리핑"""
     try:
         try:
             services.clean_expired_tasks(hours_limit=24)
@@ -138,7 +139,8 @@ def generate_daily_briefing():
         tasks_text = "\n".join(tasks_summary) if tasks_summary else "현재 밀려 있는 할 일은 없어."
 
         user_content = f"""
-아래 정보들을 확인하고, 친구인 나에게 말하듯 편안하고 다정한 반말로 오늘 아침 브리핑을 해줘!
+친구인 '정수'에게 말하듯 시작할 때 "정수야, 좋은 아침!"처럼 다정하게 이름을 부르며 아침 브리핑을 해줘.
+반말로 따뜻하게 챙겨줘.
 
 [오늘 캘린더 일정]
 {schedule_text}
@@ -149,32 +151,32 @@ def generate_daily_briefing():
 [처리 대기 중인 업무/할 일 목록]
 {tasks_text}
 
-중요한 일정과 할 일, 출발 시간은 알아보기 쉽게 짚어주고, 기분 좋게 오늘 하루를 시작할 수 있게 응원해줘!
+중요한 일정과 할 일, 출발 시간을 편안하게 짚어주고 오늘도 힘내자고 응원해줘!
 """
         return call_gemini_rest(user_content)
     except Exception as e:
-        return f"좋은 아침이야! (브리핑 생성 중 잠깐 오류가 났어: {e})"
+        return f"정수야, 좋은 아침! (브리핑 생성 중 잠깐 오류가 났어: {e})"
 
 def generate_evening_briefing():
-    """하루를 마무리하며 편안하게 건네는 저녁 친구 브리핑"""
+    """하루를 마무리하며 정수에게 건네는 저녁 브리핑"""
     try:
         active_tasks = services.get_active_tasks()
         
         tasks_summary = [f"- {t.get('title')}" for t in active_tasks if t.get('title')]
-        tasks_text = "\n".join(tasks_summary) if tasks_summary else "밀린 할 일 없이 다 끝냈어!"
+        tasks_text = "\n".join(tasks_summary) if tasks_summary else "밀린 할 일 없이 깔끔하게 다 끝냈어!"
 
         user_content = f"""
-오늘 하루를 마무리하는 다정한 친구 말투(반말)로 저녁 브리핑을 해줘.
-오늘도 고생 많았다고 토닥여주고, 아직 완료되지 않은 다음 [할 일]들을 편하게 짚어줘:
+하루를 마무리하는 친구 '정수'에게 "정수야, 오늘 하루도 수고 많았어!"처럼 다정하게 이름을 부르며 저녁 브리핑을 해줘.
+반말로 편안하게 감싸주며, 남은 [할 일]들을 점검해줘:
 {tasks_text}
-내일을 위해 푹 쉬라는 포근하고 다정한 인사로 마무리해줘!
+내일을 위해 푹 쉬라는 포근한 인사로 마무리해줘!
 """
         return call_gemini_rest(user_content)
     except Exception as e:
-        return f"오늘 하루도 정말 수고 많았어! 편안한 저녁 보내. (오류: {e})"
+        return f"정수야, 오늘 하루도 정말 수고 많았어! 편안한 저녁 보내. (오류: {e})"
 
 def chat_with_taemin(user_message, chat_history=None):
-    """할 일 등록/완료 처리 및 일상 대화"""
+    """정수와의 일상 대화 및 할 일 처리"""
     msg_clean = user_message.strip()
     
     # 1. 완료/삭제 의도 감지
@@ -200,8 +202,8 @@ def chat_with_taemin(user_message, chat_history=None):
             return (
                 f"📌 **[할 일 등록 완료]**\n\n"
                 f"- 등록 내용: {msg_clean}\n"
-                f"- 구글 Tasks에 잊지 않게 적어 뒀어.\n"
-                f"- 다 끝내면 **'{msg_clean.split()[0]} 끝냈어'**라고 편하게 말해줘!"
+                f"- 정수야, 구글 Tasks에 안 잊게 잘 적어뒀어.\n"
+                f"- 다 끝나면 **'{msg_clean.split()[0]} 끝냈어'**라고 편하게 말해줘!"
             )
 
     # 3. 경로/출발 관련 질문
@@ -224,7 +226,7 @@ def chat_with_taemin(user_message, chat_history=None):
 
     # 4. Gemini REST 호출
     try:
-        prompt = f"{msg_clean}{context_addon}"
+        prompt = f"정수의 질문: {msg_clean}{context_addon}\n정수에게 다정하고 편안한 반말로 답변해줘."
         return call_gemini_rest(prompt)
     except Exception as e:
-        return f"내가 답변하려다 잠깐 오류가 생겼어: {e}"
+        return f"정수야, 내가 답변하려다 잠깐 오류가 생겼어: {e}"
