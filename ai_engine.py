@@ -5,11 +5,10 @@ from datetime import datetime, timedelta
 import streamlit as st
 import services
 
-# 가장 안정적인 최신 공식 모델 우선순위 목록
+# 구글 API 서버 권장 최신 플래시 모델
 CANDIDATE_MODELS = [
-    "gemini-2.5-flash",
-    "gemini-2.0-flash",
-    "gemini-2.0-flash-001"
+    "gemini-3.6-flash",
+    "gemini-2.5-flash"
 ]
 
 SYSTEM_PROMPT = """
@@ -53,7 +52,7 @@ def get_next_api_key():
     return selected_key
 
 def call_gemini_rest(prompt_text):
-    """표준 모델 목록을 순회하며 정상 응답을 반환하는 안전한 호출"""
+    """권장 모델 gemini-3.6-flash 우선 호출 및 키 순환"""
     keys = get_api_keys_pool()
     
     payload = {
@@ -70,7 +69,6 @@ def call_gemini_rest(prompt_text):
     
     last_error = None
     
-    # 1. 키 풀 순환
     for _ in range(len(keys)):
         api_key = get_next_api_key()
         headers = {
@@ -78,7 +76,6 @@ def call_gemini_rest(prompt_text):
             "x-goog-api-key": api_key
         }
         
-        # 2. 후보 모델 순환 (404 방지)
         for model in CANDIDATE_MODELS:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
             try:
@@ -95,7 +92,6 @@ def call_gemini_rest(prompt_text):
                     err_data = res.json().get("error", {})
                     err_msg = err_data.get("message", res.text)
                     last_error = f"{res.status_code} ({model}) - {err_msg}"
-                    # 404면 다음 모델 시도, 그 외 오류면 다음 키로 이동
                     if res.status_code != 404:
                         break
             except Exception as e:
