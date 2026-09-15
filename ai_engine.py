@@ -5,7 +5,6 @@ from datetime import datetime, timedelta
 import streamlit as st
 import services
 
-# 정식 플래시 모델 엔드포인트
 MODEL_NAME = "gemini-1.5-flash"
 
 SYSTEM_PROMPT = """
@@ -14,42 +13,47 @@ SYSTEM_PROMPT = """
 핵심 사항은 놓치지 않도록 직관적이고 깔끔하게 안내하며, 과도한 미사여구 없이 따뜻하고 신뢰감 있는 어투를 유지합니다.
 """
 
-def get_api_key():
-    """Secrets 또는 환경변수에서 키를 읽어오고 상태를 검증"""
-    api_key = None
-    source = "Not Found"
-    
+def get_api_keys_pool():
+    """Secrets 또는 환경변수에서 쉼표로 구분된 다중 키 목록을 파싱하여 리스트로 반환"""
+    raw_keys = ""
     if hasattr(st, "secrets"):
         if "GEMINI_API_KEY" in st.secrets:
-            api_key = st.secrets["GEMINI_API_KEY"]
-            source = "st.secrets['GEMINI_API_KEY']"
+            raw_keys = str(st.secrets["GEMINI_API_KEY"])
         elif "gemini" in st.secrets and "api_key" in st.secrets["gemini"]:
-            api_key = st.secrets["gemini"]["api_key"]
-            source = "st.secrets['gemini']['api_key']"
+            raw_keys = str(st.secrets["gemini"]["api_key"])
         elif "GOOGLE_API_KEY" in st.secrets:
-            api_key = st.secrets["GOOGLE_API_KEY"]
-            source = "st.secrets['GOOGLE_API_KEY']"
+            raw_keys = str(st.secrets["GOOGLE_API_KEY"])
             
-    if not api_key:
-        api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-        source = "os.environ"
+    if not raw_keys:
+        raw_keys = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or ""
 
-    if not api_key:
-        raise ValueError("❌ GEMINI_API_KEY를 찾을 수 없습니다. Streamlit Secrets에 등록되어 있는지 확인해주세요.")
+    if not raw_keys:
+        raise ValueError("❌ GEMINI_API_KEY를 찾을 수 없습니다. Secrets 설정을 확인해주세요.")
 
-    clean_key = str(api_key).strip().strip("'").strip('"')
-    masked_info = f"{clean_key[:6]}...{clean_key[-4:]} (글자수: {len(clean_key)}, 출처: {source})"
-    return clean_key, masked_info
+    # 쉼표(,)를 기준으로 분리하여 공백/따옴표 제거
+    keys = [k.strip().strip("'").strip('"') for k in raw_keys.split(",") if k.strip()]
+    if not keys:
+        raise ValueError("❌ 등록된 유효한 Gemini API Key가 없습니다.")
+    return keys
+
+def get_next_api_key():
+    """라운드로빈(RR) 방식으로 다음 호출할 키 1개를 선택"""
+    keys = get_api_keys_pool()
+    if "gemini_rr_index" not in st.session_state:
+        st.session_state["gemini_rr_index"] = 0
+    
+    current_idx = st.session_state["gemini_rr_index"] % len(keys)
+    selected_key = keys[current_idx]
+    
+    # 다음 호출을 위해 인덱스 순환
+    st.session_state["gemini_rr_index"] = (current_idx + 1) % len(keys)
+    return selected_key
 
 def call_gemini_rest(prompt_text):
-    """표준 x-goog-api-key 헤더를 사용하는 순수 REST API 호출"""
-    api_key, key_info = get_api_key()
+    """라운드로빈 키 분배 및 만약의 경우 다른 키로 즉시 재시도(Failover)"""
+    keys = get_api_keys_pool()
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent"
     
-    headers = {
-        "Content-Type": "application/json",
-        "x-goog-api-key": api_key
-    }
     payload = {
         "systemInstruction": {
             "parts": [{"text": SYSTEM_PROMPT}]
@@ -62,18 +66,44 @@ def call_gemini_rest(prompt_text):
         }
     }
     
-    res = requests.post(url, headers=headers, json=payload, timeout=20)
-    if res.status_code == 200:
-        data = res.json()
-        candidates = data.get("candidates", [])
-        if candidates:
-            parts = candidates[0].get("content", {}).get("parts", [])
-            if parts:
-                return parts[0].get("text", "")
-        return "답변을 받아오지 못했습니다."
-    else:
-        err_msg = res.json().get("error", {}).get("message", res.text)
-        raise Exception(f"{res.status_code} - {err_msg} [키 점검: {key_info}]")
+    last_error = None
+    
+    # 등록된 키 풀을 순서대로 시도
+    for _ in range(len(keys)):
+        api_key = get_next_api_key()
+        
+        # AQ. 신규 키와 AIza 구형 키 헤더 규격 대응
+        if api_key.startswith("AQ."):
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}"
+            }
+        else:
+            headers = {
+                "Content-Type": "application/json",
+                "x-goog-api-key": api_key
+            }
+        
+        try:
+            res = requests.post(url, headers=headers, json=payload, timeout=20)
+            if res.status_code == 200:
+                data = res.json()
+                candidates = data.get("candidates", [])
+                if candidates:
+                    parts = candidates[0].get("content", {}).get("parts", [])
+                    if parts:
+                        return parts[0].get("text", "")
+                return "답변을 받아오지 못했습니다."
+            else:
+                err_msg = res.json().get("error", {}).get("message", res.text)
+                last_error = f"{res.status_code} - {err_msg}"
+                # Rate limit(429)이나 일시적 오류 시 다음 키로 넘어가 재시도
+                continue
+        except Exception as e:
+            last_error = str(e)
+            continue
+            
+    raise Exception(f"모든 API 키 호출 실패. 마지막 오류: {last_error}")
 
 def generate_daily_briefing():
     """오늘의 일정, 대기 중인 [할 일], 이동 권장 출발 시각을 종합한 아침 브리핑 생성"""
