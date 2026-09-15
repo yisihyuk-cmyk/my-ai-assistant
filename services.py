@@ -21,11 +21,26 @@ ELEVENLABS_VOICE_ID = get_secret("ELEVENLABS_VOICE_ID", "gDx7aX4UOQMthJevd64d")
 CALENDAR_ID = get_secret("CALENDAR_ID", "yisihyuk@gmail.com")
 
 # --- [1] 안산 실시간 날씨 조회 (Open-Meteo 무료 API) ---
-def get_today_weather():
-    """안산시 기준 오늘 날씨 요약 (최고/최저 기온, 현재 기온)"""
+# services.py 개선 코드
+
+def get_today_weather(location_name="안산"):
+    """
+    정수의 목적지나 활동 지역 기준 실시간 날씨 조회
+    카카오 로컬 검색으로 좌표를 찾고 해당 위치 날씨를 가져옴
+    """
     try:
-        # 안산시 좌표: 위도 37.3219, 경도 126.8309
-        url = "https://api.open-meteo.com/v1/forecast?latitude=37.3219&longitude=126.8309&current=temperature_2m,precipitation,weather_code&daily=temperature_2m_max,temperature_2m_min&timezone=Asia%2FTokyo"
+        # 카카오 API로 해당 지역 좌표(위도/경도) 검색
+        lon, lat = get_coordinates(location_name)
+        if not lon or not lat:
+            lat, lon = 37.3219, 126.8309
+            location_name = "안산"
+
+        url = (
+            f"https://api.open-meteo.com/v1/forecast?"
+            f"latitude={lat}&longitude={lon}&"
+            f"current=temperature_2m,precipitation,weather_code&"
+            f"daily=temperature_2m_max,temperature_2m_min&timezone=Asia%2FTokyo"
+        )
         res = requests.get(url, timeout=5)
         if res.status_code == 200:
             data = res.json()
@@ -36,10 +51,11 @@ def get_today_weather():
             min_temp = daily.get("temperature_2m_min", ["-"])[0]
             
             rain_text = "비나 눈 예보가 있으니 우산 꼭 챙겨!" if precip > 0 else "비 소식은 없어."
-            return f"현재 기온은 {curr_temp}°C, 오늘 낮 최고 {max_temp}°C / 최저 {min_temp}°C야. {rain_text}"
+            return f"[{location_name}] 기준, 현재 기온은 {curr_temp}°C이고 오늘 낮 최고 {max_temp}°C / 최저 {min_temp}°C야. {rain_text}"
     except Exception as e:
         print(f"날씨 조회 실패: {e}")
-    return "일교차에 유의하고 옷 따뜻하게 챙겨 입어!"
+        
+    return f"오늘 [{location_name}] 일교차에 유의하고 옷 따뜻하게 챙겨 입어!"
 
 # --- [2] ElevenLabs TTS 음성 생성 ---
 def text_to_speech(text):
