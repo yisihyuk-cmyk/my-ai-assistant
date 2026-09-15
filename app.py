@@ -57,9 +57,9 @@ if "submitted_prompt" not in st.session_state:
     st.session_state.submitted_prompt = ""
 
 if "input_mode" not in st.session_state:
-    st.session_state.input_mode = "text"  # 'text' 또는 'voice'
+    st.session_state.input_mode = "text"
 
-# --- 4. 사이드바 (시트 아카이브 및 관리) ---
+# --- 4. 사이드바 (서재 & 아카이브) ---
 with st.sidebar:
     st.title("📁 태민이 서재 & 아카이브")
     if st.button("🔄 시트 새로고침", use_container_width=True):
@@ -75,18 +75,17 @@ with st.sidebar:
                 st.caption(f"🕒 {time_val}")
                 st.write(content)
     else:
-        st.caption("기록된 메모가 없거나 시트 연결을 확인 중입니다.")
+        st.caption("기록된 메모가 없거나 시트 연결을 확인 중이야.")
 
 # --- 5. 본문 상단 헤더 & 브리핑 버튼 ---
-st.title("✨ 나만의 AI 비서, 태민이")
+st.title("✨ 안녕, 태민이야!")
 
 col_morning, col_evening = st.columns(2)
 
 with col_morning:
     if st.button("🌅 오늘 아침 브리핑", use_container_width=True):
-        with st.spinner("오늘 일정, 할 일, 이동 시간을 정리하고 있어요..."):
+        with st.spinner("오늘 일정, 할 일, 이동 시간을 정리하고 있어..."):
             briefing = generate_daily_briefing()
-            # 브리핑은 음성으로도 함께 전달
             audio_bytes = services.text_to_speech(briefing)
             st.session_state.messages.append({
                 "role": "assistant",
@@ -97,7 +96,7 @@ with col_morning:
 
 with col_evening:
     if st.button("🌙 저녁 마무리 브리핑", use_container_width=True):
-        with st.spinner("오늘 하루 정리와 목소리를 준비하고 있어요..."):
+        with st.spinner("오늘 하루 정리와 목소리를 준비하고 있어..."):
             evening_msg = generate_evening_briefing()
             audio_bytes = services.text_to_speech(evening_msg)
             st.session_state.messages.append({
@@ -113,7 +112,6 @@ st.markdown("---")
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
-        # 음성 데이터가 첨부되어 있을 때만 오디오 플레이어 출력
         if msg.get("audio"):
             st.audio(msg["audio"], format="audio/mp3", autoplay=True)
 
@@ -123,7 +121,7 @@ def handle_text_submit():
     if text:
         st.session_state.messages.append({"role": "user", "content": text})
         st.session_state.submitted_prompt = text
-        st.session_state.input_mode = "text"  # 텍스트 입력 플래그
+        st.session_state.input_mode = "text"
         st.session_state.custom_text_input = ""
 
 st.markdown('<div class="fixed-bottom-bar">', unsafe_allow_html=True)
@@ -135,7 +133,7 @@ with st.form(key="chat_bottom_form", clear_on_submit=False):
         st.text_input(
             "메시지 입력",
             key="custom_text_input",
-            placeholder="태민이에게 질문이나 할 일을 남겨보세요...",
+            placeholder="태민이에게 편하게 물어보거나 할 일을 적어줘...",
             label_visibility="collapsed"
         )
     with col_mic:
@@ -145,24 +143,23 @@ with st.form(key="chat_bottom_form", clear_on_submit=False):
 
 st.markdown('</div>', unsafe_allow_html=True)
 
-# --- 8. 마이크 클릭 시 음성 모드 입력 처리 ---
+# --- 8. 마이크 클릭 시 음성 모드 ---
 if mic_clicked:
-    # 브라우저 음성 인식 컴포넌트 호출 또는 음성 프롬프트 트리거
     st.session_state.input_mode = "voice"
-    st.info("🎙️ 마이크를 통해 듣고 있습니다. (음성 질문 시 태민이가 목소리로 답변합니다)")
+    st.info("🎙️ 듣고 있어! (음성으로 대화할 땐 나도 목소리로 답해줄게)")
 
-# --- 9. 태민이 답변 생성 (모드별 목소리 분기) ---
+# --- 9. 태민이 답변 생성 ---
 if st.session_state.submitted_prompt:
     current_prompt = st.session_state.submitted_prompt
     mode = st.session_state.input_mode
     st.session_state.submitted_prompt = ""
     
     with st.chat_message("assistant"):
-        with st.spinner("태민이가 확인하고 있어요..."):
+        with st.spinner("확인하고 있어..."):
             reply = chat_with_taemin(current_prompt)
             st.markdown(reply)
             
-            # 음성으로 불렀을 때만 ElevenLabs TTS 생성 (텍스트 입력 시엔 토큰 절약 & 무음)
+            # 텍스트 입력 시 무음(토큰 절약), 음성 대화 시에만 목소리 재생
             audio_bytes = None
             if mode == "voice":
                 audio_bytes = services.text_to_speech(reply)
@@ -175,6 +172,5 @@ if st.session_state.submitted_prompt:
                 "audio": audio_bytes
             })
             
-    # 기본 텍스트 모드로 복귀
     st.session_state.input_mode = "text"
     st.rerun()
