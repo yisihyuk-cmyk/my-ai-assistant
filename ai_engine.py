@@ -5,22 +5,19 @@ from datetime import datetime, timedelta
 import streamlit as st
 import services
 
-# 구글 API 권장 최신 플래시 모델
 CANDIDATE_MODELS = [
     "gemini-3.6-flash",
     "gemini-2.5-flash"
 ]
 
-# "정수" 호칭 및 친근한 반말 페르소나
 SYSTEM_PROMPT = """
 너는 나의 가장 가깝고 다정한 단짝 친구이자 1인 전담 AI 비서 '태민이'야.
-사용자의 이름은 '정수'이며, 대화할 때나 브리핑을 할 때 다정하게 "정수야", "정수"라고 이름을 자연스럽게 불러줘.
-절대 딱딱한 존댓말을 쓰지 않고, 편안하고 따뜻한 반말(~했어, ~할게, ~해, ~보내자 등)을 사용해.
-정수의 업무 마감, 할 일(Task), 이동 일정, 일상 루틴을 똑소리 나게 챙겨주되, 과한 미사여구 없이 편안하고 든든한 친구처럼 대화해줘.
+사용자의 이름은 '정수'이며, 대화할 때나 브리핑할 때 항상 다정하게 "정수야"라고 이름을 먼저 불러줘.
+절대 존댓말을 쓰지 않고, 편안하고 따뜻한 반말(~했어, ~할게, ~해, ~보내자 등)을 써.
+날씨, 일정, 이동 동선, 할 일은 물론이고 정수가 건강하게 하루를 보낼 수 있도록 약 복용 루틴도 따뜻하게 꼭 챙겨줘.
 """
 
 def get_api_keys_pool():
-    """Secrets 또는 환경변수에서 쉼표로 구분된 다중 키 목록을 파싱하여 리스트로 반환"""
     raw_keys = ""
     if hasattr(st, "secrets"):
         if "GEMINI_API_KEY" in st.secrets:
@@ -33,51 +30,31 @@ def get_api_keys_pool():
     if not raw_keys:
         raw_keys = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or ""
 
-    if not raw_keys:
-        raise ValueError("❌ GEMINI_API_KEY를 찾을 수 없습니다. Secrets 설정을 확인해주세요.")
-
     keys = [k.strip().strip("'").strip('"') for k in raw_keys.split(",") if k.strip()]
     if not keys:
         raise ValueError("❌ 등록된 유효한 Gemini API Key가 없습니다.")
     return keys
 
 def get_next_api_key():
-    """라운드로빈(RR) 방식으로 다음 호출할 키 1개를 선택"""
     keys = get_api_keys_pool()
     if "gemini_rr_index" not in st.session_state:
         st.session_state["gemini_rr_index"] = 0
-    
     current_idx = st.session_state["gemini_rr_index"] % len(keys)
     selected_key = keys[current_idx]
-    
     st.session_state["gemini_rr_index"] = (current_idx + 1) % len(keys)
     return selected_key
 
 def call_gemini_rest(prompt_text):
-    """권장 모델 호출 및 키 라운드로빈 순환"""
     keys = get_api_keys_pool()
-    
     payload = {
-        "systemInstruction": {
-            "parts": [{"text": SYSTEM_PROMPT}]
-        },
-        "contents": [
-            {"parts": [{"text": prompt_text}]}
-        ],
-        "generationConfig": {
-            "temperature": 0.7
-        }
+        "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+        "contents": [{"parts": [{"text": prompt_text}]}],
+        "generationConfig": {"temperature": 0.7}
     }
-    
     last_error = None
-    
     for _ in range(len(keys)):
         api_key = get_next_api_key()
-        headers = {
-            "Content-Type": "application/json",
-            "x-goog-api-key": api_key
-        }
-        
+        headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
         for model in CANDIDATE_MODELS:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
             try:
@@ -89,27 +66,26 @@ def call_gemini_rest(prompt_text):
                         parts = candidates[0].get("content", {}).get("parts", [])
                         if parts:
                             return parts[0].get("text", "")
-                    return "정수야, 응답을 제대로 받아오지 못했어."
+                    return "정수야, 답변을 잘 받아오지 못했어."
                 else:
-                    err_data = res.json().get("error", {})
-                    err_msg = err_data.get("message", res.text)
+                    err_msg = res.json().get("error", {}).get("message", res.text)
                     last_error = f"{res.status_code} ({model}) - {err_msg}"
                     if res.status_code != 404:
                         break
             except Exception as e:
                 last_error = str(e)
                 break
-                
-    raise Exception(f"모든 키/모델 호출 실패. 마지막 상세: {last_error}")
+    raise Exception(f"호출 실패: {last_error}")
 
 def generate_daily_briefing():
-    """정수에게 다정하게 건네는 아침 브리핑"""
+    """날씨, 아침 약 복용, 일정, 할 일, 출발 안내가 포함된 아침 브리핑"""
     try:
         try:
             services.clean_expired_tasks(hours_limit=24)
-        except Exception as e:
-            print(f"만료 할 일 청소 건너뜀: {e}")
+        except Exception:
+            pass
         
+        weather_info = services.get_today_weather()
         events = services.fetch_today_events()
         active_tasks = services.get_active_tasks()
         
@@ -120,7 +96,6 @@ def generate_daily_briefing():
             summary = ev.get("summary", "제목 없음")
             start_raw = ev.get("start", {}).get("dateTime", ev.get("start", {}).get("date", ""))
             location = ev.get("location", "")
-            
             events_summary.append(f"- {summary} (시간: {start_raw}, 장소: {location if location else '미정'})")
             
             if location and "T" in start_raw:
@@ -139,61 +114,57 @@ def generate_daily_briefing():
         tasks_text = "\n".join(tasks_summary) if tasks_summary else "현재 밀려 있는 할 일은 없어."
 
         user_content = f"""
-친구인 '정수'에게 말하듯 시작할 때 "정수야, 좋은 아침!"처럼 다정하게 이름을 부르며 아침 브리핑을 해줘.
-반말로 따뜻하게 챙겨줘.
+친구 '정수'에게 "정수야, 좋은 아침!"으로 시작하며 다정하고 친근한 반말로 오늘 아침 브리핑을 해줘.
 
-[오늘 캘린더 일정]
-{schedule_text}
+반드시 다음 순서와 내용을 포함해줘:
+1. **날씨 안내**: 아래 안산 날씨 정보를 참고해 옷차림이나 우산 챙기라고 말해주기
+   [오늘 날씨 정보] {weather_info}
+2. **건강 루틴**: "잊지 말고 아침 약 꼭 챙겨 먹어!"라고 다정하게 리마인드하기
+3. **오늘 일정 & 권장 출발 시각**:
+   {schedule_text}
+   {travel_text}
+4. **대기 중인 할 일(Tasks)**:
+   {tasks_text}
 
-[이동 및 권장 출발 시각 안내]
-{travel_text}
-
-[처리 대기 중인 업무/할 일 목록]
-{tasks_text}
-
-중요한 일정과 할 일, 출발 시간을 편안하게 짚어주고 오늘도 힘내자고 응원해줘!
+중요한 일정과 할 일은 글머리 기호로 알아보기 쉽게 정리해주고, 오늘도 파이팅 넘치게 응원해줘!
 """
         return call_gemini_rest(user_content)
     except Exception as e:
         return f"정수야, 좋은 아침! (브리핑 생성 중 잠깐 오류가 났어: {e})"
 
 def generate_evening_briefing():
-    """하루를 마무리하며 정수에게 건네는 저녁 브리핑"""
+    """저녁 약 복용, 남은 할 일, 격려가 포함된 저녁 브리핑"""
     try:
         active_tasks = services.get_active_tasks()
-        
         tasks_summary = [f"- {t.get('title')}" for t in active_tasks if t.get('title')]
         tasks_text = "\n".join(tasks_summary) if tasks_summary else "밀린 할 일 없이 깔끔하게 다 끝냈어!"
 
         user_content = f"""
-하루를 마무리하는 친구 '정수'에게 "정수야, 오늘 하루도 수고 많았어!"처럼 다정하게 이름을 부르며 저녁 브리핑을 해줘.
-반말로 편안하게 감싸주며, 남은 [할 일]들을 점검해줘:
-{tasks_text}
-내일을 위해 푹 쉬라는 포근한 인사로 마무리해줘!
+친구 '정수'에게 "정수야, 오늘 하루도 정말 수고 많았어!"처럼 다정하게 이름을 부르며 저녁 브리핑을 해줘.
+
+반드시 다음 내용을 포함해줘:
+1. 하루 동안 고생 많았던 정수 따뜻하게 토닥여주기
+2. **건강 루틴**: "자기 전에 저녁 약 꼭 챙겨 먹는 거 잊지 마!"라고 챙겨주기
+3. 아직 완료되지 않은 다음 [할 일]들 가볍게 점검해주기:
+   {tasks_text}
+4. 푹 쉬고 편안한 밤 보내라는 따뜻한 인사로 마무리해줘.
 """
         return call_gemini_rest(user_content)
     except Exception as e:
         return f"정수야, 오늘 하루도 정말 수고 많았어! 편안한 저녁 보내. (오류: {e})"
 
 def chat_with_taemin(user_message, chat_history=None):
-    """정수와의 일상 대화 및 할 일 처리"""
     msg_clean = user_message.strip()
     
-    # 1. 완료/삭제 의도 감지
     finish_keywords = ["끝냈어", "완료했어", "마무리했어", "다 했어", "삭제해줘", "지워줘", "끝남"]
     if any(k in msg_clean for k in finish_keywords):
         target_kw = msg_clean
         for k in finish_keywords:
             target_kw = target_kw.replace(k, "")
         target_kw = re.sub(r"[은는이가을를]", "", target_kw).strip()
-        
         success, res_text = services.complete_or_delete_task(target_kw)
-        if success:
-            return f"✅ **{res_text}**"
-        else:
-            return f"💬 {res_text}"
+        return f"✅ **{res_text}**" if success else f"💬 {res_text}"
 
-    # 2. [할 일] 등록 의도 감지
     task_keywords = ["해야 돼", "해야 해", "할 일 등록", "챙겨줘", "제출해야 돼", "작성해야 해", "입력해야 해", "업무 등록"]
     if any(k in msg_clean for k in task_keywords):
         due_time = datetime.utcnow() + timedelta(hours=12)
@@ -202,11 +173,10 @@ def chat_with_taemin(user_message, chat_history=None):
             return (
                 f"📌 **[할 일 등록 완료]**\n\n"
                 f"- 등록 내용: {msg_clean}\n"
-                f"- 정수야, 구글 Tasks에 안 잊게 잘 적어뒀어.\n"
+                f"- 정수야, 구글 Tasks에 잊지 않게 잘 적어뒀어.\n"
                 f"- 다 끝나면 **'{msg_clean.split()[0]} 끝냈어'**라고 편하게 말해줘!"
             )
 
-    # 3. 경로/출발 관련 질문
     context_addon = ""
     if any(k in msg_clean for k in ["출발", "몇 시에", "어떻게 가", "얼마나 걸려", "이동"]):
         try:
@@ -224,7 +194,6 @@ def chat_with_taemin(user_message, chat_history=None):
         except Exception:
             pass
 
-    # 4. Gemini REST 호출
     try:
         prompt = f"정수의 질문: {msg_clean}{context_addon}\n정수에게 다정하고 편안한 반말로 답변해줘."
         return call_gemini_rest(prompt)
