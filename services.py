@@ -110,17 +110,27 @@ def get_calendar_service():
         return None
     return build("calendar", "v3", credentials=creds)
 
+# 상단 get_secret 선언부에 CALENDAR_ID 추가
+CALENDAR_ID = get_secret("CALENDAR_ID", "primary")
+
 def fetch_today_events(target_date=None):
     service = get_calendar_service()
     if not service:
         return []
+    
+    # 캘린더 ID 확인 (Secrets의 이메일 우선 사용)
+    cal_id = CALENDAR_ID if CALENDAR_ID else "primary"
+    
     if target_date is None:
         target_date = datetime.now()
-    start_of_day = datetime(target_date.year, target_date.month, target_date.day, 0, 0, 0).isoformat() + "Z"
-    end_of_day = datetime(target_date.year, target_date.month, target_date.day, 23, 59, 59).isoformat() + "Z"
+        
+    # 한국 시간 기준 당일 00:00:00 ~ 23:59:59 범위 설정 (+09:00)
+    start_of_day = datetime(target_date.year, target_date.month, target_date.day, 0, 0, 0).isoformat() + "+09:00"
+    end_of_day = datetime(target_date.year, target_date.month, target_date.day, 23, 59, 59).isoformat() + "+09:00"
+    
     try:
         events_result = service.events().list(
-            calendarId="primary",
+            calendarId=cal_id,
             timeMin=start_of_day,
             timeMax=end_of_day,
             singleEvents=True,
@@ -128,7 +138,7 @@ def fetch_today_events(target_date=None):
         ).execute()
         return events_result.get("items", [])
     except Exception as e:
-        print(f"Calendar API 오류: {e}")
+        print(f"Calendar API 오류 ({cal_id}): {e}")
         return []
 
 # --- [6] 구글 Tasks 관리 함수 ---
