@@ -78,27 +78,34 @@ def call_gemini_rest(prompt_text):
     raise Exception(f"호출 실패: {last_error}")
 
 def generate_daily_briefing():
-    """자연스러운 대화 흐름으로 날씨, 아침 약, 일정, 할 일을 전하는 아침 브리핑"""
+    """날씨, 아침 약, 일정, 할 일을 다정하게 전하는 아침 브리핑"""
     try:
         try:
             services.clean_expired_tasks(hours_limit=24)
         except Exception:
             pass
         
-        weather_info = services.get_today_weather()
         events = services.fetch_today_events()
         active_tasks = services.get_active_tasks()
+        
+        # 오늘 일정 중 첫 번째 장소가 있으면 그곳 날씨, 없으면 기본 안산 날씨 조회
+        target_location = "안산"
+        for ev in events:
+            loc = ev.get("location", "").strip()
+            if loc:
+                target_location = loc
+                break
+                
+        weather_info = services.get_today_weather(target_location)
         
         events_summary = []
         travel_guidance_list = []
         
         for ev in events:
             summary = ev.get("summary", "제목 없음")
-            # 종일 일정(date) 및 시간 지정 일정(dateTime) 처리
             start_raw = ev.get("start", {}).get("dateTime", ev.get("start", {}).get("date", ""))
             location = ev.get("location", "")
             
-            # 읽기 쉬운 시간 표시
             if "T" in start_raw:
                 time_part = start_raw.split("T")[1][:5]
                 time_str = f"{time_part} 시작"
@@ -119,7 +126,6 @@ def generate_daily_briefing():
 
         schedule_text = "\n".join(events_summary) if events_summary else "오늘 등록된 주요 일정은 없어."
         travel_text = "\n\n".join(travel_guidance_list) if travel_guidance_list else ""
-        
         tasks_summary = [f"- {t.get('title')}" for t in active_tasks if t.get('title')]
         tasks_text = "\n".join(tasks_summary) if tasks_summary else "현재 밀려 있는 할 일은 없어."
 
@@ -128,16 +134,12 @@ def generate_daily_briefing():
 
 [필수 규칙]
 - 시작은 "정수야, 좋은 아침!"처럼 다정하게 이름을 부르며 시작할 것.
-- **절대 1, 2, 3 같은 번호나 목록 번호를 붙이지 말 것.** 친구와 편안하게 수다 떨듯 문단으로 매끄럽게 이어줘.
-- **날씨**: 안산 날씨를 친근하게 알려주며 옷차림 챙겨주기
-  (날씨 정보: {weather_info})
-- **건강**: "밥 든든하게 먹고 아침 약 꼭 챙겨 먹어!"라고 따뜻하게 당부하기
-- **오늘 캘린더 일정 & 이동**: 
-  {schedule_text}
-  {travel_text}
-- **할 일(Tasks)**: 
-  {tasks_text}
-- 마지막엔 기분 좋은 응원과 함께 오늘 하루도 신나게 보내자고 마무리해줘.
+- 절대 1, 2, 3 같은 번호나 목록 번호를 붙이지 말 것.
+- 날씨: {weather_info} 내용을 바탕으로 오늘 갈 곳에 맞게 옷차림이나 우산 챙겨주기.
+- 건강: "밥 든든하게 먹고 아침 약 꼭 챙겨 먹어!"라고 챙겨주기.
+- 일정 & 이동: {schedule_text} / {travel_text}
+- 할 일: {tasks_text}
+- 기분 좋은 응원으로 마무리해줘!
 """
         return call_gemini_rest(user_content)
     except Exception as e:
