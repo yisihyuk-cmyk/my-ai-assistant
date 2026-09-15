@@ -5,7 +5,8 @@ from datetime import datetime, timedelta
 import streamlit as st
 import services
 
-MODEL_NAME = "gemini-1.5-flash"
+# 가장 호환성이 높은 모델명 (v1beta에서는 gemini-2.0-flash 또는 gemini-1.5-flash-latest)
+MODEL_NAME = "gemini-2.0-flash"
 
 SYSTEM_PROMPT = """
 당신은 다정하고 꼼꼼한 1인 전담 AI 비서 '태민이'입니다.
@@ -30,7 +31,6 @@ def get_api_keys_pool():
     if not raw_keys:
         raise ValueError("❌ GEMINI_API_KEY를 찾을 수 없습니다. Secrets 설정을 확인해주세요.")
 
-    # 쉼표(,) 기준으로 분리하여 공백/따옴표 제거
     keys = [k.strip().strip("'").strip('"') for k in raw_keys.split(",") if k.strip()]
     if not keys:
         raise ValueError("❌ 등록된 유효한 Gemini API Key가 없습니다.")
@@ -49,9 +49,9 @@ def get_next_api_key():
     return selected_key
 
 def call_gemini_rest(prompt_text):
-    """구글 AI Studio 표준 헤더(x-goog-api-key)를 이용한 라운드로빈 호출"""
+    """404 방지: 2.0-flash 기본 호출 후 실패 시 1.5-flash-latest 자동 폴백"""
     keys = get_api_keys_pool()
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent"
+    models_to_try = [MODEL_NAME, "gemini-1.5-flash-latest"]
     
     payload = {
         "systemInstruction": {
@@ -67,35 +67,37 @@ def call_gemini_rest(prompt_text):
     
     last_error = None
     
-    # 등록된 4개의 키를 차례대로 순환 시도
+    # 키 풀 순환
     for _ in range(len(keys)):
         api_key = get_next_api_key()
-        
-        # Bearer를 절대 쓰지 않고 표준 x-goog-api-key 헤더만 사용
         headers = {
             "Content-Type": "application/json",
             "x-goog-api-key": api_key
         }
         
-        try:
-            res = requests.post(url, headers=headers, json=payload, timeout=20)
-            if res.status_code == 200:
-                data = res.json()
-                candidates = data.get("candidates", [])
-                if candidates:
-                    parts = candidates[0].get("content", {}).get("parts", [])
-                    if parts:
-                        return parts[0].get("text", "")
-                return "답변을 받아오지 못했습니다."
-            else:
-                err_msg = res.json().get("error", {}).get("message", res.text)
-                last_error = f"{res.status_code} - {err_msg}"
-                continue
-        except Exception as e:
-            last_error = str(e)
-            continue
-            
-    raise Exception(f"모든 API 키 호출 실패. 마지막 오류: {last_error}")
+        for model in models_to_try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+            try:
+                res = requests.post(url, headers=headers, json=payload, timeout=20)
+                if res.status_code == 200:
+                    data = res.json()
+                    candidates = data.get("candidates", [])
+                    if candidates:
+                        parts = candidates[0].get("content", {}).get("parts", [])
+                        if parts:
+                            return parts[0].get("text", "")
+                    return "답변을 받아오지 못했습니다."
+                else:
+                    err_msg = res.json().get("error", {}).get("message", res.text)
+                    last_error = f"{res.status_code} - {err_msg}"
+                    # 404면 다음 모델명 시도, 그 외 오류면 다음 키로
+                    if res.status_code != 404:
+                        break
+            except Exception as e:
+                last_error = str(e)
+                break
+                
+    raise Exception(f"모든 API 키/모델 호출 실패. 마지막 오류: {last_error}")
 
 def generate_daily_briefing():
     """오늘의 일정, 대기 중인 [할 일], 이동 권장 출발 시각을 종합한 아침 브리핑 생성"""
