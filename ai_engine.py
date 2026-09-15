@@ -1,89 +1,103 @@
-import json
-import time
-from datetime import datetime, timedelta
-from google import genai
-from google.genai import types
+import os
+from datetime import datetime
 import streamlit as st
-from config import API_KEYS
-import services
+from google import genai
+from services import fetch_today_events, get_departure_guidance
 
-custom_tools = [
-    services.add_calendar_event,
-    services.get_calendar_events,
-    services.delete_calendar_event,
-    services.save_archive_note
-]
-
-def generate_with_key_rotation(contents, system_prompt, use_tools=True):
-    if "key_index" not in st.session_state:
-        st.session_state.key_index = 0
-
-    total = len(API_KEYS)
-    last_err = ""
-    for _ in range(total):
-        k = API_KEYS[st.session_state.key_index]
-        st.session_state.key_index = (st.session_state.key_index + 1) % total
-        try:
-            client = genai.Client(api_key=k)
-            cfg = types.GenerateContentConfig(
-                tools=custom_tools if use_tools else None,
-                system_instruction=system_prompt,
-                temperature=0.2
-            )
-            res = client.models.generate_content(
-                model="gemini-3.6-flash",
-                contents=contents,
-                config=cfg
-            )
-            return res.text if res.text else "처리를 완료했어."
-        except Exception as ex:
-            last_err = str(ex)
-            if "429" in last_err or "RESOURCE_EXHAUSTED" in last_err:
-                time.sleep(0.5)
-                continue
-            return f"일시적 오류: {last_err}"
-    return f"API 연결 지연: {last_err}"
-
-def auto_detect_and_remember(user_prompt: str):
-    if len(user_prompt.strip()) < 5:
-        return
-    if any(k in user_prompt for k in ["브리핑", "날씨", "몇 시", "삭제", "안녕", "확인해줘", "일정"]):
-        return
-
-    prompt = f"""사용자 발화에서 기억할 할일, 장보기, 창작 영감이 있으면 JSON으로 응답해.
-없으면 NONE.
-카테고리는 반드시 ["할일", "영감창작", "일상기록"] 중 하나로 지정해.
-{{"should_save": true, "category": "할일 또는 영감창작 또는 일상기록", "summary": "내용"}}
-발화: "{user_prompt}" """
-
-    try:
-        current_idx = st.session_state.get("key_index", 0)
-        client = genai.Client(api_key=API_KEYS[current_idx])
-        res = client.models.generate_content(model="gemini-3.6-flash", contents=prompt)
-        ans = res.text.strip()
-        if "{" in ans and "should_save" in ans:
-            data = json.loads(ans[ans.find("{"):ans.rfind("}")+1])
-            if data.get("should_save"):
-                services.save_archive_note(data.get("summary"), data.get("category", "일상기록"))
-    except Exception:
-        pass
-
-def get_briefing(is_morning: bool = True) -> str:
-    if is_morning:
-        services.cleanup_past_todo_events()
-        weather = services.get_current_weather()
-        events = services.get_day_events_str(datetime.now())
-        prompt = f"정수에게 다정한 반말로 아침 브리핑 3~4문장 작성. 날씨: {weather}, 일정: {events}. 비/눈 시 운전주의, 약 복용 당부."
+def get_gemini_client():
+    api_key = None
+    if hasattr(st, "secrets") and "GEMINI_API_KEY" in st.secrets:
+        api_key = st.secrets["GEMINI_API_KEY"]
     else:
-        tmrw = datetime.now() + timedelta(days=1)
-        events = services.get_day_events_str(tmrw)
-        prompt = f"정수에게 하루 위로와 함께 내일 일정({events}) 미리보기 3~4문장 브리핑. 저녁 약 복용 당부."
+        api_key = os.getenv("GEMINI_API_KEY")
+    return genai.Client(api_key=api_key)
 
-    text = generate_with_key_rotation(prompt, "너는 다정한 비서 태민이야. 반말로 자연스럽게 답해줘.", use_tools=False)
-    title = "☀️ 오늘 아침 브리핑" if is_morning else "🌙 오늘 하루 마무리"
-    services.send_push_notification(title, text)
-    return text
+SYSTEM_PROMPT = """
+당신은 다정하고 명쾌한 1인 전담 AI 비서 '태민이'입니다.
+사용자의 하루 일정, 이동 경로, 장보기 및 업무 체크를 돕습니다.
+답변은 실용적이고 간결하게 핵심 위주로 안내하며, 과도한 미사여구 없이 따뜻한 어투를 유지합니다.
+"""
 
-def develop_creative_idea(source_text: str) -> str:
-    prompt = f"다음 단상/메모를 발전시켜 감각적인 시적 변주나 소설 대사 씬을 스케치해줘:\n\"{source_text}\""
-    return generate_with_key_rotation(prompt, "너는 문학적 창작 파트너야. 품격 있는 문장으로 제안해줘.", use_tools=False)
+def generate_daily_briefing():
+    """오늘의 일정과 위치 기반 이동 권장 출발 시각을 종합한 아침/데일리 브리핑 생성"""
+    client = get_gemini_client()
+    events = fetch_today_events()
+    
+    events_summary = []
+    travel_guidance_list = []
+    
+    for ev in events:
+        summary = ev.get("summary", "제목 없음")
+        start_raw = ev.get("start", {}).get("dateTime", ev.get("start", {}).get("date", ""))
+        location = ev.get("location", "")
+        
+        events_summary.append(f"- {summary} (시작: {start_raw}, 장소: {location if location else '미정'})")
+        
+        # 장소 정보가 있고 시작 시간이 분 단위까지 있는 경우 출발 시간 역산
+        if location and "T" in start_raw:
+            try:
+                # ISO 포맷 파싱 (타임존 제거 단순화)
+                clean_time = start_raw.split("+")[0]
+                dt = datetime.fromisoformat(clean_time)
+                guidance = get_departure_guidance(summary, location, dt)
+                travel_guidance_list.append(guidance)
+            except Exception as e:
+                print(f"시간 파싱 실패: {e}")
+
+    schedule_text = "\n".join(events_summary) if events_summary else "오늘 등록된 주요 일정이 없습니다."
+    travel_text = "\n\n".join(travel_guidance_list) if travel_guidance_list else ""
+
+    user_content = f"""
+다음은 오늘 사용자의 캘린더 일정입니다:
+{schedule_text}
+
+아래는 카카오 경로 기반으로 계산된 이동 및 권장 출발 시간 안내입니다:
+{travel_text}
+
+위 데이터를 바탕으로 사용자에게 힘찬 하루를 여는 다정한 브리핑 메시지를 작성해줘.
+출발 안내가 있다면 누락 없이 깔끔한 글머리 기호로 강조해줘.
+"""
+
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=user_content,
+        config=genai.types.GenerateContentConfig(
+            system_instruction=SYSTEM_PROMPT,
+            temperature=0.7
+        )
+    )
+    return response.text
+
+def chat_with_taemin(user_message, chat_history=None):
+    """일반 대화 및 실시간 질문 응답 처리"""
+    client = get_gemini_client()
+    
+    # 위치/출발 관련 질문이 들어왔을 때 오늘 캘린더 정보를 주입
+    context_addon = ""
+    if any(k in user_message for k in ["출발", "몇 시에", "어떻게 가", "얼마나 걸려", "이동"]):
+        events = fetch_today_events()
+        travel_guidance_list = []
+        for ev in events:
+            summary = ev.get("summary", "")
+            location = ev.get("location", "")
+            start_raw = ev.get("start", {}).get("dateTime", "")
+            if location and "T" in start_raw:
+                try:
+                    dt = datetime.fromisoformat(start_raw.split("+")[0])
+                    travel_guidance_list.append(get_departure_guidance(summary, location, dt))
+                except:
+                    pass
+        if travel_guidance_list:
+            context_addon = "\n\n[참고: 오늘 일정 경로 정보]\n" + "\n".join(travel_guidance_list)
+
+    prompt = f"{user_message}{context_addon}"
+    
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=prompt,
+        config=genai.types.GenerateContentConfig(
+            system_instruction=SYSTEM_PROMPT,
+            temperature=0.7
+        )
+    )
+    return response.text
