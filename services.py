@@ -1,177 +1,146 @@
-import smtplib
+import os
 import requests
-import gspread
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta
+import streamlit as st
+from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
-from elevenlabs.client import ElevenLabs
-from config import (
-    CREDS, CALENDAR_ID, SPREADSHEET_ID, ELEVEN_API_KEY, 
-    ELEVEN_VOICE_ID, NTFY_TOPIC, GMAIL_USER, GMAIL_PASSWORD
-)
 
-# 1. 서비스 클라이언트 초기화
-calendar_service = build("calendar", "v3", credentials=CREDS)
+# --- [1] 키 및 환경 설정 로드 ---
+def get_secret(key, default=""):
+    if hasattr(st, "secrets") and key in st.secrets:
+        return st.secrets[key]
+    return os.getenv(key, default)
 
-def get_sheet():
-    """구글 시트 워크시트 객체 반환"""
-    gc = gspread.authorize(CREDS)
-    sh = gc.open_by_key(SPREADSHEET_ID)
-    return sh.sheet1
+KAKAO_REST_API_KEY = get_secret("KAKAO_REST_API_KEY")
 
-# 2. 구글 시트 영구 저장소 함수 (SQLite 대체)
-def save_archive_note(content: str, category: str = "일반메모") -> str:
+# --- [2] 구글 캘린더 서비스 빌드 ---
+def get_calendar_service():
+    scopes = ["https://www.googleapis.com/auth/calendar"]
+    
+    if hasattr(st, "secrets") and "gcp_service_account" in st.secrets:
+        creds_dict = dict(st.secrets["gcp_service_account"])
+        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+    elif os.path.exists("credentials.json"):
+        creds = Credentials.from_service_account_file("credentials.json", scopes=scopes)
+    else:
+        return None
+        
+    return build("calendar", "v3", credentials=creds)
+
+def fetch_today_events(target_date=None):
+    """지정한 날짜의 캘린더 일정을 가져옵니다."""
+    service = get_calendar_service()
+    if not service:
+        return []
+        
+    if target_date is None:
+        target_date = datetime.now()
+        
+    start_of_day = datetime(target_date.year, target_date.month, target_date.day, 0, 0, 0).isoformat() + "Z"
+    end_of_day = datetime(target_date.year, target_date.month, target_date.day, 23, 59, 59).isoformat() + "Z"
+    
     try:
-        sheet = get_sheet()
-        now_time = datetime.now().strftime("%m-%d %H:%M")
-        sheet.append_row([category, content, now_time])
-        return f"보관 완료: [{category}] {content}"
+        events_result = service.events().list(
+            calendarId="primary",
+            timeMin=start_of_day,
+            timeMax=end_of_day,
+            singleEvents=True,
+            orderBy="startTime"
+        ).execute()
+        return events_result.get("items", [])
     except Exception as e:
-        return f"메모 저장 실패: {str(e)}"
-
-def get_all_notes(limit: int = 30):
-    """최근 메모 가져오기 (역순)"""
-    try:
-        sheet = get_sheet()
-        rows = sheet.get_all_values()
-        if len(rows) <= 1:
-            return []
-        data = rows[1:]  # 헤더 제외
-        # (행 인덱스, category, content, created_at)
-        indexed_data = [(i + 2, r[0], r[1], r[2] if len(r) > 2 else "") for i, r in enumerate(data)]
-        return list(reversed(indexed_data))[:limit]
-    except Exception:
+        print(f"Calendar API 오류: {e}")
         return []
 
-def delete_sheet_row(row_idx: int):
-    try:
-        sheet = get_sheet()
-        sheet.delete_rows(row_idx)
-        return True
-    except Exception:
-        return False
-
-# 3. 캘린더 & 할일 자동 정리
-def add_calendar_event(summary: str, start_iso: str, end_iso: str, description: str = "") -> str:
-    try:
-        final_summary = summary if summary.startswith("[할일]") else f"[할일] {summary}"
-        event = {
-            'summary': final_summary,
-            'description': "auto_delete_todo" if not description else f"auto_delete_todo | {description}",
-            'start': {'dateTime': start_iso, 'timeZone': 'Asia/Seoul'},
-            'end': {'dateTime': end_iso, 'timeZone': 'Asia/Seoul'},
-        }
-        calendar_service.events().insert(calendarId=CALENDAR_ID, body=event).execute()
-        return f"할 일 등록 완료: '{final_summary}' ({start_iso} ~ {end_iso})"
-    except Exception as e:
-        return f"일정 등록 실패: {str(e)}"
-
-def cleanup_past_todo_events():
-    try:
-        now_dt = datetime.now()
-        now_iso = now_dt.isoformat() + 'Z'
-        past_limit_iso = (now_dt - timedelta(days=7)).isoformat() + 'Z'
+# --- [3] 카카오 기반 길찾기 및 출발 시각 계산 모듈 ---
+def get_coordinates(address_or_keyword):
+    """지명 또는 주소를 위경도 좌표로 변환"""
+    if not KAKAO_REST_API_KEY:
+        return None, None
         
-        events_result = calendar_service.events().list(
-            calendarId=CALENDAR_ID,
-            timeMin=past_limit_iso,
-            timeMax=now_iso,
-            singleEvents=True
-        ).execute()
-        for e in events_result.get('items', []):
-            summary = e.get('summary', '')
-            desc = e.get('description', '')
-            if "[할일]" in summary or "[TODO]" in summary or desc == "auto_delete_todo":
-                calendar_service.events().delete(calendarId=CALENDAR_ID, eventId=e['id']).execute()
-    except Exception:
-        pass
-
-def get_day_events_str(target_date: datetime) -> str:
+    headers = {"Authorization": f"KakaoAK {KAKAO_REST_API_KEY}"}
+    url = "https://dapi.kakao.com/v2/local/search/keyword.json"
+    params = {"query": address_or_keyword}
+    
     try:
-        day_start = target_date.replace(hour=0, minute=0, second=0, microsecond=0).isoformat() + 'Z'
-        day_end = (target_date.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)).isoformat() + 'Z'
-        events_result = calendar_service.events().list(
-            calendarId=CALENDAR_ID, timeMin=day_start, timeMax=day_end, singleEvents=True, orderBy='startTime'
-        ).execute()
-        items = events_result.get('items', [])
-        if not items: return "잡힌 일정 없음"
-        res = []
-        for e in items:
-            raw = e['start'].get('dateTime', e['start'].get('date'))
-            t = raw.split("T")[1][:5] if "T" in raw else "종일"
-            res.append(f"{t} {e.get('summary')}")
-        return ", ".join(res)
-    except Exception:
-        return "일정 확인 불가"
-
-def get_calendar_events(days: int = 14) -> str:
-    try:
-        now = (datetime.now() - timedelta(days=1)).isoformat() + 'Z'
-        events_result = calendar_service.events().list(
-            calendarId=CALENDAR_ID, timeMin=now, maxResults=30, singleEvents=True, orderBy='startTime'
-        ).execute()
-        items = events_result.get('items', [])
-        if not items: return "예정된 일정이 없습니다."
-        res = [f"- {e.get('summary')} | {e['start'].get('dateTime', e['start'].get('date'))}" for e in items]
-        return "\n".join(res)
+        res = requests.get(url, headers=headers, params=params, timeout=5)
+        if res.status_code == 200:
+            docs = res.json().get("documents", [])
+            if docs:
+                return float(docs[0]["x"]), float(docs[0]["y"])
     except Exception as e:
-        return f"일정 조회 실패: {str(e)}"
+        print(f"좌표 검색 실패: {e}")
+    return None, None
 
-def delete_calendar_event(query_title: str) -> str:
-    try:
-        now = (datetime.now() - timedelta(days=1)).isoformat() + 'Z'
-        events_result = calendar_service.events().list(
-            calendarId=CALENDAR_ID, timeMin=now, q=query_title, maxResults=5, singleEvents=True
-        ).execute()
-        items = events_result.get('items', [])
-        if not items: return f"'{query_title}' 관련 일정을 찾지 못했어."
-        calendar_service.events().delete(calendarId=CALENDAR_ID, eventId=items[0]['id']).execute()
-        return f"'{items[0].get('summary')}' 일정을 삭제했어!"
-    except Exception as e:
-        return f"삭제 실패: {str(e)}"
+def calculate_travel_duration(start_place, end_place, travel_mode="car"):
+    """자가용 또는 대중교통 이동 소요 시간(분) 산출"""
+    start_x, start_y = get_coordinates(start_place)
+    end_x, end_y = get_coordinates(end_place)
+    
+    if not start_x or not end_x:
+        return None
+    
+    if travel_mode == "car":
+        url = "https://apis-navi.kakaomobility.com/v1/directions"
+        headers = {
+            "Authorization": f"KakaoAK {KAKAO_REST_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        params = {
+            "origin": f"{start_x},{start_y}",
+            "destination": f"{end_x},{end_y}",
+            "priority": "RECOMMEND"
+        }
+        try:
+            res = requests.get(url, headers=headers, params=params, timeout=5)
+            if res.status_code == 200:
+                routes = res.json().get("routes", [])
+                if routes and "summary" in routes[0]:
+                    duration_sec = routes[0]["summary"]["duration"]
+                    return int(duration_sec / 60)
+        except Exception as e:
+            print(f"내비 경로 실패: {e}")
+        return 50
+    else:
+        # 대중교통: 자차 기준시간 바탕 가중치(환승 및 도보 포함) 적용
+        car_mins = calculate_travel_duration(start_place, end_place, travel_mode="car")
+        if car_mins:
+            return int(car_mins * 1.3 + 15)
+        return 75
 
-# 4. 날씨 & 외부 전송 유틸리티
-def get_current_weather(lat: float = 37.3219, lon: float = 126.8309) -> str:
-    try:
-        url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=Asia%2FSeoul"
-        res = requests.get(url, timeout=5).json()
-        curr, daily = res.get("current_weather", {}), res.get("daily", {})
-        temp = curr.get("temperature", "-")
-        max_t, min_t = daily.get("temperature_2m_max", ["-"])[0], daily.get("temperature_2m_min", ["-"])[0]
-        pop = daily.get("precipitation_probability_max", [0])[0]
-        w_code = curr.get("weathercode", 0)
-        desc = "비/눈" if w_code in [51, 61, 71, 80] else ("흐림" if w_code in [1, 2, 3] else "맑음")
-        return f"{desc}, 기온 {temp}도(최저 {min_t}도/최고 {max_t}도), 강수확률 {pop}%"
-    except Exception:
-        return "날씨 정보 확인 불가"
+def get_departure_guidance(event_title, event_location, event_start_dt, default_start="안산"):
+    """일정 및 장소를 판별하여 권장 출발 시각 문자열 반환"""
+    title_lower = event_title.lower()
+    loc_lower = event_location.lower()
+    
+    # 1) 관극/문화생활 패턴 -> 대중교통
+    transit_keywords = ["연극", "뮤지컬", "관극", "대학로", "예술", "아트센터", "극장", "공연", "티켓"]
+    # 2) 출장/컨설팅 패턴 -> 자차
+    drive_keywords = ["컨설팅", "강의", "출장", "연수", "자문", "출강", "워크숍", "교육청", "학교"]
+    
+    if any(k in title_lower or k in loc_lower for k in transit_keywords):
+        mode = "transit"
+        mode_text = "대중교통"
+        buffer_mins = 15  # 티켓 발권 및 입장 대기 여유
+    elif any(k in title_lower or k in loc_lower for k in drive_keywords):
+        mode = "car"
+        mode_text = "자차 운전"
+        buffer_mins = 20  # 주차 및 세팅 여유
+    else:
+        mode = "car"
+        mode_text = "이동"
+        buffer_mins = 10
 
-def send_push_notification(title: str, message: str):
-    if not NTFY_TOPIC: return
-    try:
-        requests.post(f"https://ntfy.sh/{NTFY_TOPIC}", data=message.encode("utf-8"),
-                      headers={"Title": title.encode("utf-8").decode("latin-1"), "Priority": "high"}, timeout=5)
-    except Exception: pass
+    duration = calculate_travel_duration(default_start, event_location, travel_mode=mode)
+    if not duration:
+        return f"📍 **[{event_title}]** 위치({event_location}) 경로를 특정하지 못했습니다. 여유 있게 출발을 권장합니다."
 
-def send_email_to_self(subject: str, body: str) -> bool:
-    if not GMAIL_USER or not GMAIL_PASSWORD: return False
-    try:
-        msg = MIMEMultipart()
-        msg['From'], msg['To'], msg['Subject'] = GMAIL_USER, GMAIL_USER, f"[태민 비서] {subject}"
-        msg.attach(MIMEText(body, 'plain', 'utf-8'))
-        server = smtplib.SMTP_SSL('smtp.gmail.com', 465, timeout=10)
-        server.login(GMAIL_USER, GMAIL_PASSWORD)
-        server.send_message(msg)
-        server.quit()
-        return True
-    except Exception: return False
-
-def generate_elevenlabs_audio(text: str) -> bytes:
-    if not ELEVEN_API_KEY: return b""
-    try:
-        for wrong in ["정숙", "영수", "진수", "정서", "점수"]:
-            text = text.replace(wrong, "정수")
-        el = ElevenLabs(api_key=ELEVEN_API_KEY)
-        gen = el.text_to_speech.convert(voice_id=ELEVEN_VOICE_ID, text=text, model_id="eleven_multilingual_v2")
-        return b"".join(gen)
-    except Exception: return b""
+    total_need_mins = duration + buffer_mins
+    departure_time = event_start_dt - timedelta(minutes=total_need_mins)
+    
+    return (
+        f"🚗 **이동 안내 ({mode_text})**: '{event_title}'\n"
+        f"- 목적지: {event_location}\n"
+        f"- 이동 예상: 약 {duration}분 (여유 {buffer_mins}분 포함 총 {total_need_mins}분 소요)\n"
+        f"- **권장 출발 시각: {departure_time.strftime('%H시 %M분')}**"
+    )
