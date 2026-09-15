@@ -1,11 +1,11 @@
 import os
 import re
-import json
 import requests
 from datetime import datetime, timedelta
 import streamlit as st
 import services
 
+# 정식 플래시 모델 엔드포인트
 MODEL_NAME = "gemini-1.5-flash"
 
 SYSTEM_PROMPT = """
@@ -15,38 +15,47 @@ SYSTEM_PROMPT = """
 """
 
 def get_api_key():
-    """Secrets 또는 환경변수에서 순수 API Key 문자열만 추출"""
+    """Secrets 또는 환경변수에서 키를 읽어오고 상태를 검증"""
     api_key = None
+    source = "Not Found"
+    
     if hasattr(st, "secrets"):
         if "GEMINI_API_KEY" in st.secrets:
             api_key = st.secrets["GEMINI_API_KEY"]
+            source = "st.secrets['GEMINI_API_KEY']"
         elif "gemini" in st.secrets and "api_key" in st.secrets["gemini"]:
             api_key = st.secrets["gemini"]["api_key"]
+            source = "st.secrets['gemini']['api_key']"
         elif "GOOGLE_API_KEY" in st.secrets:
             api_key = st.secrets["GOOGLE_API_KEY"]
+            source = "st.secrets['GOOGLE_API_KEY']"
             
     if not api_key:
         api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        source = "os.environ"
 
     if not api_key:
-        raise ValueError("GEMINI_API_KEY를 찾을 수 없습니다.")
+        raise ValueError("❌ GEMINI_API_KEY를 찾을 수 없습니다. Streamlit Secrets에 등록되어 있는지 확인해주세요.")
 
-    return str(api_key).strip().strip("'").strip('"')
+    clean_key = str(api_key).strip().strip("'").strip('"')
+    masked_info = f"{clean_key[:6]}...{clean_key[-4:]} (글자수: {len(clean_key)}, 출처: {source})"
+    return clean_key, masked_info
 
 def call_gemini_rest(prompt_text):
-    """GCP 서비스 계정 충돌을 완전히 우회하는 순수 REST API 호출"""
-    api_key = get_api_key()
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={api_key}"
+    """표준 x-goog-api-key 헤더를 사용하는 순수 REST API 호출"""
+    api_key, key_info = get_api_key()
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent"
     
-    headers = {"Content-Type": "application/json"}
+    headers = {
+        "Content-Type": "application/json",
+        "x-goog-api-key": api_key
+    }
     payload = {
         "systemInstruction": {
             "parts": [{"text": SYSTEM_PROMPT}]
         },
         "contents": [
-            {
-                "parts": [{"text": prompt_text}]
-            }
+            {"parts": [{"text": prompt_text}]}
         ],
         "generationConfig": {
             "temperature": 0.7
@@ -64,15 +73,15 @@ def call_gemini_rest(prompt_text):
         return "답변을 받아오지 못했습니다."
     else:
         err_msg = res.json().get("error", {}).get("message", res.text)
-        raise Exception(f"{res.status_code} - {err_msg}")
+        raise Exception(f"{res.status_code} - {err_msg} [키 점검: {key_info}]")
 
 def generate_daily_briefing():
     """오늘의 일정, 대기 중인 [할 일], 이동 권장 출발 시각을 종합한 아침 브리핑 생성"""
     try:
         try:
             services.clean_expired_tasks(hours_limit=24)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"만료 할 일 청소 건너뜀: {e}")
         
         events = services.fetch_today_events()
         active_tasks = services.get_active_tasks()
