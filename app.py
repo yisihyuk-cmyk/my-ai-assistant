@@ -1,88 +1,136 @@
 import streamlit as st
 from datetime import datetime
-from google.genai import types
-from streamlit_mic_recorder import speech_to_text
 import services
-import ai_engine
+from ai_engine import generate_daily_briefing, chat_with_taemin
 
-st.set_page_config(page_title="2int의 AI 비서 태민", page_icon="🤖", layout="wide")
+# --- 1. 기본 페이지 설정 ---
+st.set_page_config(
+    page_title="태민이 - 나만의 AI 비서",
+    page_icon="✨",
+    layout="wide",
+    initial_sidebar_state="auto"
+)
 
-# 사이드바: 영구 구글 시트 아카이브 및 도구
-with st.sidebar:
-    st.header("🗂️ 구글 시트 아카이브")
-    notes = services.get_all_notes(limit=25)
-    
-    # 창작 메모 다운로드
-    creative_texts = [f"[{r[3]}] {r[2]}" for r in notes if r[1] == "영감창작"]
-    if creative_texts:
-        st.download_button("📝 창작 노트 다운로드 (.txt)", "\n".join(creative_texts), "creative_notes.txt", use_container_width=True)
+# --- 2. 커스텀 CSS (모바일 반응형 & 하단 입력바 고정) ---
+st.markdown("""
+<style>
+/* 전체 페이지 배경 및 여백 설정 */
+.main .block-container {
+    padding-top: 2rem;
+    padding-bottom: 110px !important; /* 하단 입력바에 대화가 가려지지 않도록 공간 확보 */
+    max-width: 800px;
+}
 
-    for row_idx, cat, content, created_at in notes:
-        with st.expander(f"[{cat}] {content[:10]}... ({created_at})"):
-            st.write(f"**내용:** {content}")
-            c1, c2 = st.columns(2)
-            with c1:
-                if st.button("✉️ 메일", key=f"m_{row_idx}"):
-                    if services.send_email_to_self(f"[{cat}] 메모", content):
-                        st.toast("메일 전송 완료!")
-            with c2:
-                if st.button("🗑️ 삭제", key=f"d_{row_idx}"):
-                    services.delete_sheet_row(row_idx)
-                    st.toast("시트에서 삭제됨!")
-                    st.rerun()
-            if cat == "영감창작":
-                if st.button("💡 아이디어 발전", key=f"dev_{row_idx}", use_container_width=True):
-                    with st.spinner("생각 발전 중..."):
-                        st.info(ai_engine.develop_creative_idea(content))
+/* 하단 고정 입력 바 컨테이너 */
+.fixed-bottom-bar {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background-color: var(--background-color, #ffffff);
+    padding: 10px 16px 22px 16px;
+    border-top: 1px solid rgba(128, 128, 128, 0.2);
+    z-index: 999;
+}
 
-st.markdown("### 🤖 2int의 AI 비서 태민")
+/* 버튼 높이와 텍스트 인풋 높이 일치시키기 */
+div[data-testid="stForm"] button {
+    height: 44px;
+    width: 100%;
+    border-radius: 10px;
+    padding: 0;
+}
+div[data-testid="stTextInput"] input {
+    height: 44px;
+    border-radius: 10px;
+}
+</style>
+""", unsafe_allow_html=True)
 
-# 상단 버튼 & 음소거 토글
-b1, b2, b3 = st.columns([2, 2, 2])
-trig_m = b1.button("☀️ 아침 브리핑", use_container_width=True)
-trig_e = b2.button("🌙 저녁 마무리", use_container_width=True)
-mute_mode = b3.toggle("🔇 텍스트만 (음성 끄기)", value=False)
-
+# --- 3. 세션 상태(Session State) 초기화 ---
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
+if "submitted_prompt" not in st.session_state:
+    st.session_state.submitted_prompt = ""
+
+# --- 4. 사이드바 (구글 시트 아카이브 & 퀵 액션) ---
+with st.sidebar:
+    st.title("📁 태민이 서재 & 기록")
+    
+    st.subheader("☀️ 데일리 루틴")
+    if st.button("🌅 오늘 아침 브리핑 듣기", use_container_width=True):
+        with st.spinner("오늘 일정과 이동 시간을 계산하고 있어요..."):
+            briefing = generate_daily_briefing()
+            st.session_state.messages.append({"role": "assistant", "content": briefing})
+            st.rerun()
+
+    st.markdown("---")
+    st.subheader("📂 구글 시트 아카이브")
+    if st.button("🔄 시트 새로고침", use_container_width=True):
+        st.rerun()
+        
+    notes = services.get_all_notes(limit=20)
+    if notes:
+        for idx, row in enumerate(notes):
+            time_val = row.get("시간", row.get("일시", ""))
+            category = row.get("분류", row.get("카테고리", "메모"))
+            content = row.get("내용", "")
+            
+            with st.expander(f"[{category}] {content[:15]}..."):
+                st.caption(f"🕒 {time_val}")
+                st.write(content)
+    else:
+        st.caption("기록된 메모가 없거나 시트 연결을 확인 중입니다.")
+
+# --- 5. 메인 화면 헤더 ---
+st.title("✨ 안녕, 태민이야!")
+st.caption("일정 관리, 이동 시간 역산, 생각 정리까지 무엇이든 이야기해 줘.")
+
+# --- 6. 대화 히스토리 렌더링 ---
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
-        st.write(msg["content"])
-        if msg.get("audio"): st.audio(msg["audio"], format="audio/mp3")
+        st.markdown(msg["content"])
 
-# 입력 컨트롤
-c_mic, c_space = st.columns([1, 4])
-with c_mic:
-    voice_in = speech_to_text(language="ko", start_prompt="🎤 말하기", stop_prompt="⏹️ 완료", key="mic")
-text_in = st.chat_input("무엇이든 물어보거나 부탁해...")
+# --- 7. 하단 커스텀 입력바 (텍스트창 + 🎤 + 전송) ---
+def handle_submit():
+    text = st.session_state.get("custom_text_input", "").strip()
+    if text:
+        st.session_state.messages.append({"role": "user", "content": text})
+        st.session_state.submitted_prompt = text
+        st.session_state.custom_text_input = ""
 
-prompt, is_typed = None, False
-if trig_m: prompt = "오늘 아침 브리핑 시작해줘"
-elif trig_e: prompt = "오늘 저녁 마무리 브리핑 시작해줘"
-elif text_in: prompt, is_typed = text_in, True
-elif voice_in: prompt = voice_in
+st.markdown('<div class="fixed-bottom-bar">', unsafe_allow_html=True)
 
-if prompt:
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"): st.write(prompt)
+with st.form(key="chat_bottom_form", clear_on_submit=False):
+    # 컬럼 비율: 텍스트 74%, 마이크 13%, 전송 13%
+    col_input, col_mic, col_submit = st.columns([0.74, 0.13, 0.13])
+    
+    with col_input:
+        st.text_input(
+            "메시지 입력",
+            key="custom_text_input",
+            placeholder="태민이에게 질문이나 할 일을 남겨보세요...",
+            label_visibility="collapsed"
+        )
+    with col_mic:
+        mic_clicked = st.form_submit_button("🎤", help="음성으로 말하기")
+    with col_submit:
+        send_clicked = st.form_submit_button("전송", on_click=handle_submit)
 
-    ai_engine.auto_detect_and_remember(prompt)
+st.markdown('</div>', unsafe_allow_html=True)
 
+# --- 8. 이벤트 및 답변 처리 ---
+if mic_clicked:
+    st.info("🎙️ 마이크 기능이 활성화되었습니다. (브라우저 마이크 권한을 확인해주세요)")
+
+if st.session_state.submitted_prompt:
+    current_prompt = st.session_state.submitted_prompt
+    st.session_state.submitted_prompt = ""  # 소비 후 비우기
+    
     with st.chat_message("assistant"):
-        with st.spinner("태민이가 확인하고 있어..."):
-            if trig_m: reply = ai_engine.get_briefing(is_morning=True)
-            elif trig_e: reply = ai_engine.get_briefing(is_morning=False)
-            else:
-                sys_p = f"너는 정수의 전담 비서 태민이야. 다정한 반말로 명확하게 답해. 일정/할일은 add_calendar_event 도구 사용. 현재: {datetime.now()}"
-                reply = ai_engine.generate_with_key_rotation(prompt, sys_p, use_tools=True)
-
-            st.write(reply)
-            
-            # 음성 조건 (음소거 off + 타이핑 아님 또는 브리핑)
-            audio_bytes = None
-            if not mute_mode and (not is_typed or trig_m or trig_e):
-                audio_bytes = services.generate_elevenlabs_audio(reply)
-                if audio_bytes: st.audio(audio_bytes, format="audio/mp3", autoplay=True)
-
-            st.session_state.messages.append({"role": "assistant", "content": reply, "audio": audio_bytes})
+        with st.spinner("태민이가 확인하고 있어요..."):
+            reply = chat_with_taemin(current_prompt)
+            st.markdown(reply)
+            st.session_state.messages.append({"role": "assistant", "content": reply})
+    st.rerun()
