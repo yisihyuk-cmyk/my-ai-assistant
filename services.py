@@ -2,6 +2,7 @@ import os
 import requests
 from datetime import datetime, timedelta
 import streamlit as st
+import gspread
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 
@@ -12,19 +13,70 @@ def get_secret(key, default=""):
     return os.getenv(key, default)
 
 KAKAO_REST_API_KEY = get_secret("KAKAO_REST_API_KEY")
+SPREADSHEET_NAME = get_secret("SPREADSHEET_NAME", "태민이_아카이브")
 
-# --- [2] 구글 캘린더 서비스 빌드 ---
-def get_calendar_service():
-    scopes = ["https://www.googleapis.com/auth/calendar"]
-    
+# --- [2] 구글 인증 클라이언트 생성 ---
+def get_gcp_credentials():
+    scopes = [
+        "https://www.googleapis.com/auth/calendar",
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+    ]
     if hasattr(st, "secrets") and "gcp_service_account" in st.secrets:
         creds_dict = dict(st.secrets["gcp_service_account"])
-        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+        return Credentials.from_service_account_info(creds_dict, scopes=scopes)
     elif os.path.exists("credentials.json"):
-        creds = Credentials.from_service_account_file("credentials.json", scopes=scopes)
-    else:
+        return Credentials.from_service_account_file("credentials.json", scopes=scopes)
+    return None
+
+# --- [3] 구글 시트 메모 관련 함수 (누락 복구) ---
+def get_sheet_client():
+    creds = get_gcp_credentials()
+    if not creds:
         return None
+    return gspread.authorize(creds)
+
+def get_all_notes(limit=25):
+    """구글 시트에서 최신 메모 목록을 가져옵니다."""
+    try:
+        gc = get_sheet_client()
+        if not gc:
+            return []
         
+        sh = gc.open(SPREADSHEET_NAME)
+        worksheet = sh.sheet1
+        records = worksheet.get_all_records()
+        
+        # 최신 순으로 정렬 후 limit 개수 반환
+        if records:
+            records.reverse()
+            return records[:limit]
+        return []
+    except Exception as e:
+        print(f"구글 시트 읽기 오류: {e}")
+        return []
+
+def save_note(category, content):
+    """구글 시트에 새 메모/할 일/영감을 저장합니다."""
+    try:
+        gc = get_sheet_client()
+        if not gc:
+            return False
+        
+        sh = gc.open(SPREADSHEET_NAME)
+        worksheet = sh.sheet1
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        worksheet.append_row([now_str, category, content])
+        return True
+    except Exception as e:
+        print(f"구글 시트 저장 오류: {e}")
+        return False
+
+# --- [4] 구글 캘린더 서비스 관련 함수 ---
+def get_calendar_service():
+    creds = get_gcp_credentials()
+    if not creds:
+        return None
     return build("calendar", "v3", credentials=creds)
 
 def fetch_today_events(target_date=None):
@@ -52,7 +104,7 @@ def fetch_today_events(target_date=None):
         print(f"Calendar API 오류: {e}")
         return []
 
-# --- [3] 카카오 기반 길찾기 및 출발 시각 계산 모듈 ---
+# --- [5] 카카오 기반 길찾기 및 출발 시각 계산 모듈 ---
 def get_coordinates(address_or_keyword):
     """지명 또는 주소를 위경도 좌표로 변환"""
     if not KAKAO_REST_API_KEY:
@@ -102,14 +154,14 @@ def calculate_travel_duration(start_place, end_place, travel_mode="car"):
             print(f"내비 경로 실패: {e}")
         return 50
     else:
-        # 대중교통: 자차 기준시간 바탕 가중치(환승 및 도보 포함) 적용
+        # 대중교통: 자차 경로 기반 가중치(환승 및 도보) 환산
         car_mins = calculate_travel_duration(start_place, end_place, travel_mode="car")
         if car_mins:
             return int(car_mins * 1.3 + 15)
         return 75
 
 def get_departure_guidance(event_title, event_location, event_start_dt, default_start="안산"):
-    """일정 및 장소를 판별하여 권장 출발 시각 문자열 반환"""
+    """일정명과 장소를 판별하여 권장 출발 시각 문자열 반환"""
     title_lower = event_title.lower()
     loc_lower = event_location.lower()
     
@@ -121,7 +173,7 @@ def get_departure_guidance(event_title, event_location, event_start_dt, default_
     if any(k in title_lower or k in loc_lower for k in transit_keywords):
         mode = "transit"
         mode_text = "대중교통"
-        buffer_mins = 15  # 티켓 발권 및 입장 대기 여유
+        buffer_mins = 15  # 티켓 발권 및 대기 여유
     elif any(k in title_lower or k in loc_lower for k in drive_keywords):
         mode = "car"
         mode_text = "자차 운전"
@@ -133,7 +185,7 @@ def get_departure_guidance(event_title, event_location, event_start_dt, default_
 
     duration = calculate_travel_duration(default_start, event_location, travel_mode=mode)
     if not duration:
-        return f"📍 **[{event_title}]** 위치({event_location}) 경로를 특정하지 못했습니다. 여유 있게 출발을 권장합니다."
+        return f"📍 **[{event_title}]** 장소({event_location}) 경로를 특정하지 못했습니다. 여유 있게 출발을 권장합니다."
 
     total_need_mins = duration + buffer_mins
     departure_time = event_start_dt - timedelta(minutes=total_need_mins)
