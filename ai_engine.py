@@ -1,11 +1,11 @@
 import os
 import re
+import json
+import requests
 from datetime import datetime, timedelta
 import streamlit as st
-import google.generativeai as genai
 import services
 
-# 모델 설정 (가장 안정적이고 빠른 플래시 모델)
 MODEL_NAME = "gemini-1.5-flash"
 
 SYSTEM_PROMPT = """
@@ -14,8 +14,8 @@ SYSTEM_PROMPT = """
 핵심 사항은 놓치지 않도록 직관적이고 깔끔하게 안내하며, 과도한 미사여구 없이 따뜻하고 신뢰감 있는 어투를 유지합니다.
 """
 
-def init_gemini():
-    """API Key를 안전하게 로드하여 genai 설정"""
+def get_api_key():
+    """Secrets 또는 환경변수에서 순수 API Key 문자열만 추출"""
     api_key = None
     if hasattr(st, "secrets"):
         if "GEMINI_API_KEY" in st.secrets:
@@ -29,24 +29,50 @@ def init_gemini():
         api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
 
     if not api_key:
-        raise ValueError("GEMINI_API_KEY를 찾을 수 없습니다. Streamlit Secrets를 확인해주세요.")
+        raise ValueError("GEMINI_API_KEY를 찾을 수 없습니다.")
 
-    clean_key = str(api_key).strip().strip("'").strip('"')
-    genai.configure(api_key=clean_key)
+    return str(api_key).strip().strip("'").strip('"')
+
+def call_gemini_rest(prompt_text):
+    """GCP 서비스 계정 충돌을 완전히 우회하는 순수 REST API 호출"""
+    api_key = get_api_key()
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={api_key}"
+    
+    headers = {"Content-Type": "application/json"}
+    payload = {
+        "systemInstruction": {
+            "parts": [{"text": SYSTEM_PROMPT}]
+        },
+        "contents": [
+            {
+                "parts": [{"text": prompt_text}]
+            }
+        ],
+        "generationConfig": {
+            "temperature": 0.7
+        }
+    }
+    
+    res = requests.post(url, headers=headers, json=payload, timeout=20)
+    if res.status_code == 200:
+        data = res.json()
+        candidates = data.get("candidates", [])
+        if candidates:
+            parts = candidates[0].get("content", {}).get("parts", [])
+            if parts:
+                return parts[0].get("text", "")
+        return "답변을 받아오지 못했습니다."
+    else:
+        err_msg = res.json().get("error", {}).get("message", res.text)
+        raise Exception(f"{res.status_code} - {err_msg}")
 
 def generate_daily_briefing():
     """오늘의 일정, 대기 중인 [할 일], 이동 권장 출발 시각을 종합한 아침 브리핑 생성"""
     try:
         try:
             services.clean_expired_tasks(hours_limit=24)
-        except Exception as e:
-            print(f"만료 할 일 청소 건너뜀: {e}")
-        
-        init_gemini()
-        model = genai.GenerativeModel(
-            model_name=MODEL_NAME,
-            system_instruction=SYSTEM_PROMPT
-        )
+        except Exception:
+            pass
         
         events = services.fetch_today_events()
         active_tasks = services.get_active_tasks()
@@ -90,19 +116,13 @@ def generate_daily_briefing():
 
 출발 시각 안내와 중요 할 일이 있다면 글머리 기호로 알아보기 쉽게 강조해줘.
 """
-        response = model.generate_content(user_content)
-        return response.text
+        return call_gemini_rest(user_content)
     except Exception as e:
         return f"☀️ 좋은 아침이야! (브리핑 생성 중 오류가 발생했어: {e})"
 
 def generate_evening_briefing():
     """하루를 마무리하며 남은 할 일과 내일 일정을 챙기는 저녁 브리핑"""
     try:
-        init_gemini()
-        model = genai.GenerativeModel(
-            model_name=MODEL_NAME,
-            system_instruction=SYSTEM_PROMPT
-        )
         active_tasks = services.get_active_tasks()
         
         tasks_summary = [f"- {t.get('title')}" for t in active_tasks if t.get('title')]
@@ -115,8 +135,7 @@ def generate_evening_briefing():
 {tasks_text}
 내일을 위해 편안한 쉼을 권하는 포근한 어투로 마무리해줘.
 """
-        response = model.generate_content(user_content)
-        return response.text
+        return call_gemini_rest(user_content)
     except Exception as e:
         return f"🌙 오늘 하루도 정말 수고 많았어! 편안한 저녁 시간 보내. (오류: {e})"
 
@@ -169,15 +188,9 @@ def chat_with_taemin(user_message, chat_history=None):
         except Exception:
             pass
 
-    # 4. Gemini 모델 응답
+    # 4. Gemini REST 호출
     try:
-        init_gemini()
-        model = genai.GenerativeModel(
-            model_name=MODEL_NAME,
-            system_instruction=SYSTEM_PROMPT
-        )
         prompt = f"{msg_clean}{context_addon}"
-        response = model.generate_content(prompt)
-        return response.text
+        return call_gemini_rest(prompt)
     except Exception as e:
         return f"태민이가 답변을 생성하는 중 오류가 발생했어: {e}"
