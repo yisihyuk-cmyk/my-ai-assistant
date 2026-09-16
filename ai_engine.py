@@ -78,7 +78,7 @@ def call_gemini_rest(prompt_text):
     raise Exception(f"호출 실패: {last_error}")
 
 def generate_daily_briefing():
-    """날씨, 아침 약, 일정, 할 일을 다정하게 전하는 아침 브리핑"""
+    """날씨, 아침 약, 일정, 할 일을 300~350자(최대 400자 이내)로 전하는 아침 브리핑"""
     try:
         try:
             services.clean_expired_tasks(hours_limit=24)
@@ -88,7 +88,7 @@ def generate_daily_briefing():
         events = services.fetch_today_events()
         active_tasks = services.get_active_tasks()
         
-        # 오늘 일정 중 첫 번째 장소가 있으면 그곳 날씨, 없으면 기본 안산 날씨 조회
+        # 첫 번째 일정 장소 기준 날씨, 없으면 안산
         target_location = "안산"
         for ev in events:
             loc = ev.get("location", "").strip()
@@ -132,21 +132,25 @@ def generate_daily_briefing():
         user_content = f"""
 친구 '정수'에게 아침에 다정하게 말을 건네듯 브리핑을 작성해줘.
 
-[필수 규칙]
+[분량 및 형식 엄수]
+- **공백 포함 300~350자 내외로 작성할 것 (절대 400자를 넘기지 마).**
 - 시작은 "정수야, 좋은 아침!"처럼 다정하게 이름을 부르며 시작할 것.
-- 절대 1, 2, 3 같은 번호나 목록 번호를 붙이지 말 것.
-- 날씨: {weather_info} 내용을 바탕으로 오늘 갈 곳에 맞게 옷차림이나 우산 챙겨주기.
-- 건강: "밥 든든하게 먹고 아침 약 꼭 챙겨 먹어!"라고 챙겨주기.
+- **절대 1, 2, 3 같은 번호나 목록 기호를 쓰지 말고 부드러운 대화체 문단으로 이어줘.**
+- 일정이나 할 일이 없을 때는 "일정도 없고 할 일도 없고"를 길게 반복하지 말고 한 문장으로 산뜻하게 언급할 것.
+
+[필수 내용]
+- 날씨: {weather_info} 바탕으로 체감 날씨와 옷차림/우산 위주로 간결히 전하기
+- 건강: "밥 든든히 챙겨 먹고 아침 약 꼭 챙겨 먹어!"라고 따뜻하게 당부하기
 - 일정 & 이동: {schedule_text} / {travel_text}
 - 할 일: {tasks_text}
-- 기분 좋은 응원으로 마무리해줘!
+- 기분 좋은 한마디 응원으로 마무리하기
 """
         return call_gemini_rest(user_content)
     except Exception as e:
         return f"정수야, 좋은 아침! (브리핑 준비 중 잠깐 오류가 생겼어: {e})"
 
 def generate_evening_briefing():
-    """자연스러운 대화 흐름으로 저녁 약, 할 일, 휴식을 전하는 저녁 브리핑"""
+    """저녁 약, 할 일, 휴식을 250~300자(최대 400자 이내)로 전하는 저녁 브리핑"""
     try:
         active_tasks = services.get_active_tasks()
         tasks_summary = [f"- {t.get('title')}" for t in active_tasks if t.get('title')]
@@ -155,13 +159,16 @@ def generate_evening_briefing():
         user_content = f"""
 친구 '정수'에게 하루를 토닥여주며 편안하게 건네는 저녁 브리핑을 작성해줘.
 
-[필수 규칙]
+[분량 및 형식 엄수]
+- **공백 포함 250~300자 내외로 작성할 것 (절대 400자를 넘기지 마).**
 - "정수야, 오늘 하루도 정말 고생 많았어!"처럼 다정하게 이름을 부르며 시작할 것.
-- **절대 1, 2, 3 같은 번호나 순번을 매기지 말 것.**
-- 수고한 정수를 포근하게 위로하고, "자기 전에 저녁 약 잊지 말고 꼭 챙겨 먹어!"라고 챙겨주기.
-- 남은 할 일이 있다면 가볍게 언급해 주고, 없으면 마음 편히 쉬라고 하기:
-  {tasks_text}
-- 편안한 밤 보내라는 따뜻한 인사로 마무리할 것.
+- **절대 1, 2, 3 같은 번호나 목록 기호를 쓰지 말고 포근한 대화체 문단으로 이어줘.**
+
+[필수 내용]
+- 고생한 정수를 따뜻하게 위로하기
+- 건강: "자기 전에 저녁 약 잊지 말고 꼭 챙겨 먹어!"라고 당부하기
+- 남은 할 일 점검: {tasks_text}
+- 편안한 밤 보내라는 따뜻한 인사로 마무리하기
 """
         return call_gemini_rest(user_content)
     except Exception as e:
