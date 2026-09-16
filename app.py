@@ -1,5 +1,6 @@
 import streamlit as st
 from datetime import datetime
+from streamlit_mic_recorder import speech_to_text  # <-- 이 줄 추가
 import services
 from ai_engine import generate_daily_briefing, generate_evening_briefing, chat_with_taemin
 
@@ -126,27 +127,40 @@ def handle_text_submit():
 
 st.markdown('<div class="fixed-bottom-bar">', unsafe_allow_html=True)
 
-with st.form(key="chat_bottom_form", clear_on_submit=False):
-    col_input, col_mic, col_submit = st.columns([0.74, 0.13, 0.13])
-    
-    with col_input:
-        st.text_input(
-            "메시지 입력",
-            key="custom_text_input",
-            placeholder="태민이에게 편하게 물어보거나 할 일을 적어줘...",
-            label_visibility="collapsed"
-        )
-    with col_mic:
-        mic_clicked = st.form_submit_button("🎤", help="음성으로 말하기")
-    with col_submit:
-        send_clicked = st.form_submit_button("전송", on_click=handle_text_submit)
+# 폼 안에는 텍스트 입력과 전송 버튼만 유지 (CSS 그리드 정렬)
+col_form, col_mic = st.columns([0.82, 0.18])
+
+with col_form:
+    with st.form(key="chat_bottom_form", clear_on_submit=False):
+        c_in, c_btn = st.columns([0.8, 0.2])
+        with c_in:
+            st.text_input(
+                "메시지 입력",
+                key="custom_text_input",
+                placeholder="태민이에게 편하게 물어봐...",
+                label_visibility="collapsed"
+            )
+        with c_btn:
+            st.form_submit_button("전송", on_click=handle_text_submit)
+
+with col_mic:
+    # 실제 음성을 인식해 텍스트로 바꿔주는 마이크 레코더
+    voice_input = speech_to_text(
+        language="ko",
+        start_prompt="🎤",
+        stop_prompt="⏹️",
+        key="bottom_mic_recorder",
+        use_container_width=True
+    )
 
 st.markdown('</div>', unsafe_allow_html=True)
 
-# --- 8. 마이크 클릭 시 음성 모드 ---
-if mic_clicked:
+# --- 8. 마이크 음성 인식 처리 ---
+if voice_input and voice_input.strip():
+    st.session_state.messages.append({"role": "user", "content": voice_input.strip()})
+    st.session_state.submitted_prompt = voice_input.strip()
     st.session_state.input_mode = "voice"
-    st.info("🎙️ 듣고 있어! (음성으로 대화할 땐 나도 목소리로 답해줄게)")
+    st.rerun()
 
 # --- 9. 태민이 답변 생성 ---
 if st.session_state.submitted_prompt:
