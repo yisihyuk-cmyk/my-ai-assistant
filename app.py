@@ -60,6 +60,10 @@ if "submitted_prompt" not in st.session_state:
 if "input_mode" not in st.session_state:
     st.session_state.input_mode = "text"
 
+# [추가] 무한 루프 방지용 이전 음성 텍스트 추적
+if "last_voice_input" not in st.session_state:
+    st.session_state.last_voice_input = None
+
 # --- 4. 사이드바 (서재 & 아카이브) ---
 with st.sidebar:
     st.title("📁 태민이 서재 & 아카이브")
@@ -127,7 +131,6 @@ def handle_text_submit():
 
 st.markdown('<div class="fixed-bottom-bar">', unsafe_allow_html=True)
 
-# 폼 안에는 텍스트 입력과 전송 버튼만 유지 (CSS 그리드 정렬)
 col_form, col_mic = st.columns([0.82, 0.18])
 
 with col_form:
@@ -144,7 +147,6 @@ with col_form:
             st.form_submit_button("전송", on_click=handle_text_submit)
 
 with col_mic:
-    # 실제 음성을 인식해 텍스트로 바꿔주는 마이크 레코더
     voice_input = speech_to_text(
         language="ko",
         start_prompt="🎤",
@@ -155,12 +157,16 @@ with col_mic:
 
 st.markdown('</div>', unsafe_allow_html=True)
 
-# --- 8. 마이크 음성 인식 처리 ---
+# --- 8. 마이크 음성 인식 처리 (무한 루프 차단) ---
 if voice_input and voice_input.strip():
-    st.session_state.messages.append({"role": "user", "content": voice_input.strip()})
-    st.session_state.submitted_prompt = voice_input.strip()
-    st.session_state.input_mode = "voice"
-    st.rerun()
+    clean_voice = voice_input.strip()
+    # 이전에 처리했던 동일한 음성 결과가 아닐 때만 최초 1회 실행
+    if clean_voice != st.session_state.last_voice_input:
+        st.session_state.last_voice_input = clean_voice
+        st.session_state.messages.append({"role": "user", "content": clean_voice})
+        st.session_state.submitted_prompt = clean_voice
+        st.session_state.input_mode = "voice"
+        # 여기서 rerun()을 호출하지 않아야 아래 9번 답변 생성으로 바로 넘어감!
 
 # --- 9. 태민이 답변 생성 ---
 if st.session_state.submitted_prompt:
