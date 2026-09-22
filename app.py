@@ -66,8 +66,9 @@ if "last_voice_input" not in st.session_state:
 
 # --- 4. 사이드바 (서재 & 아카이브) ---
 with st.sidebar:
-    st.title("📁 태민이 서재 & 아카이브")
+    st.title("📁 태민 서재 & 아카이브")
     if st.button("🔄 시트 새로고침", use_container_width=True):
+        st.cache_data.clear()  # <-- 이 줄을 추가해서 저장된 캐시를 즉시 비워줌
         st.rerun()
         
     notes = services.get_all_notes(limit=20)
