@@ -232,12 +232,14 @@ def save_note(category, content):
     try:
         gc = get_sheet_client()
         if not gc:
+            print("❌ 구글 서비스 계정 인증(creds) 실패")
             return False
         sh = gc.open(SPREADSHEET_NAME)
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         sh.sheet1.append_row([now_str, category, content])
         return True
-    except Exception:
+    except Exception as e:
+        print(f"❌ save_note 에러 발생: {e}")
         return False
 
 # --- [7] 카카오 길찾기 및 내비게이션 ---
