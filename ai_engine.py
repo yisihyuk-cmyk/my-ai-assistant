@@ -78,7 +78,36 @@ def call_gemini_rest(prompt_text):
     raise Exception(f"호출 실패: {last_error}")
 
 def generate_daily_briefing():
-    """날씨, 아침 약, 일정, 할 일을 300~350자(최대 400자 이내)로 전하는 아침 브리핑"""
+    # 1. 기존 일정 및 날씨 조회 (기존 코드 유지)
+    # events = services.get_today_events()
+    # weather = services.get_today_weather()
+    
+    # 2. 구글 시트에서 최근 남긴 메모 5개 조회 (새로 추가)
+    recent_notes = services.get_all_notes(limit=5)
+    notes_text = ""
+    if recent_notes:
+        note_lines = []
+        for n in recent_notes:
+            cat = n.get("분류", n.get("카테고리", "메모"))
+            cnt = n.get("내용", "")
+            if cnt:
+                note_lines.append(f"- [{cat}] {cnt}")
+        if note_lines:
+            notes_text = "\n[최근 정수가 남긴 중요 메모 및 생각]:\n" + "\n".join(note_lines)
+
+    # 3. 프롬프트 구성에 notes_text 추가
+    prompt = f"""
+    오늘 하루를 시작하는 정수에게 따뜻하고 든든한 아침 브리핑을 해줘.
+    
+    [오늘 일정]: (기존 일정 데이터 변수)
+    [오늘 날씨]: (기존 날씨 데이터 변수)
+    {notes_text}
+    
+    요청사항:
+    - 날씨, 아침 약, 일정, 할 일을 300~350자(최대 400자 이내)로 전하는 아침 브리핑
+    - 날씨와 일정뿐만 아니라, 정수가 최근에 메모해 둔 할 일이나 아이디어가 있다면 잊지 않도록 자연스럽게 상기시켜줘.
+    - 다정하고 똑똑한 전담 비서 태민이의 말투(반말)로 명확하고 간결하게 전해줘.
+    """
     try:
         try:
             services.clean_expired_tasks(hours_limit=24)
