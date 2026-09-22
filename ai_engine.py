@@ -78,36 +78,6 @@ def call_gemini_rest(prompt_text):
     raise Exception(f"호출 실패: {last_error}")
 
 def generate_daily_briefing():
-    # 1. 기존 일정 및 날씨 조회 (기존 코드 유지)
-    # events = services.get_today_events()
-    # weather = services.get_today_weather()
-    
-    # 2. 구글 시트에서 최근 남긴 메모 5개 조회 (새로 추가)
-    recent_notes = services.get_all_notes(limit=5)
-    notes_text = ""
-    if recent_notes:
-        note_lines = []
-        for n in recent_notes:
-            cat = n.get("분류", n.get("카테고리", "메모"))
-            cnt = n.get("내용", "")
-            if cnt:
-                note_lines.append(f"- [{cat}] {cnt}")
-        if note_lines:
-            notes_text = "\n[최근 정수가 남긴 중요 메모 및 생각]:\n" + "\n".join(note_lines)
-
-    # 3. 프롬프트 구성에 notes_text 추가
-    prompt = f"""
-    오늘 하루를 시작하는 정수에게 따뜻하고 든든한 아침 브리핑을 해줘.
-    
-    [오늘 일정]: (기존 일정 데이터 변수)
-    [오늘 날씨]: (기존 날씨 데이터 변수)
-    {notes_text}
-    
-    요청사항:
-    - 날씨, 아침 약, 일정, 할 일을 300~350자(최대 400자 이내)로 전하는 아침 브리핑
-    - 날씨와 일정뿐만 아니라, 정수가 최근에 메모해 둔 할 일이나 아이디어가 있다면 잊지 않도록 자연스럽게 상기시켜줘.
-    - 다정하고 똑똑한 전담 비서 태민이의 말투(반말)로 명확하고 간결하게 전해줘.
-    """
     try:
         try:
             services.clean_expired_tasks(hours_limit=24)
@@ -116,6 +86,17 @@ def generate_daily_briefing():
         
         events = services.fetch_today_events()
         active_tasks = services.get_active_tasks()
+        
+        # 1. 구글 시트 최근 메모 5개 조회
+        recent_notes = services.get_all_notes(limit=5)
+        notes_lines = []
+        if recent_notes:
+            for n in recent_notes:
+                cat = n.get("분류", n.get("카테고리", "메모"))
+                cnt = n.get("내용", "")
+                if cnt:
+                    notes_lines.append(f"- [{cat}] {cnt}")
+        notes_text = "\n".join(notes_lines) if notes_lines else "최근 따로 남겨둔 특별한 메모는 없어."
         
         # 첫 번째 일정 장소 기준 날씨, 없으면 안산
         target_location = "안산"
@@ -158,45 +139,59 @@ def generate_daily_briefing():
         tasks_summary = [f"- {t.get('title')}" for t in active_tasks if t.get('title')]
         tasks_text = "\n".join(tasks_summary) if tasks_summary else "현재 밀려 있는 할 일은 없어."
 
+        # Gemini에게 실제로 전달되는 프롬프트에 메모(notes_text) 주입
         user_content = f"""
 친구 '정수'에게 아침에 다정하게 말을 건네듯 브리핑을 작성해줘.
 
 [분량 및 형식 엄수]
-- **공백 포함 250~300자 이내로 콤팩트하게 작성할 것 (절대 350자를 넘기지 마).**
+- **공백 포함 250~350자 이내로 콤팩트하게 작성할 것.**
 - 시작은 "정수야, 좋은 아침!"처럼 다정하게 이름을 부르며 시작할 것.
 - **절대 1, 2, 3 같은 번호나 목록 기호를 쓰지 말고 부드러운 대화체 문단으로 이어줘.**
-- 일정이나 할 일이 없을 때는 "일정도 없고 할 일도 없고"를 길게 반복하지 말고 한 문장으로 산뜻하게 언급할 것.
+- 일정이나 메모가 없을 때는 길게 나열하지 말고 자연스럽게 한 문장으로 넘길 것.
 
 [필수 내용]
 - 날씨: {weather_info} 바탕으로 체감 날씨와 옷차림/우산 위주로 간결히 전하기
 - 건강: "밥 든든히 챙겨 먹고 아침 약 꼭 챙겨 먹어!"라고 따뜻하게 당부하기
 - 일정 & 이동: {schedule_text} / {travel_text}
 - 할 일: {tasks_text}
+- 최근 중요 메모/생각: {notes_text} (정수가 최근 메모해 둔 내용이 있다면 잊지 않게 자연스럽게 한 번 언급해줘)
 - 기분 좋은 한마디 응원으로 마무리하기
 """
         return call_gemini_rest(user_content)
     except Exception as e:
         return f"정수야, 좋은 아침! (브리핑 준비 중 잠깐 오류가 생겼어: {e})"
 
+
 def generate_evening_briefing():
-    """저녁 약, 할 일, 휴식을 250~300자(최대 400자 이내)로 전하는 저녁 브리핑"""
     try:
         active_tasks = services.get_active_tasks()
         tasks_summary = [f"- {t.get('title')}" for t in active_tasks if t.get('title')]
         tasks_text = "\n".join(tasks_summary) if tasks_summary else "밀린 할 일 없이 다 잘 끝냈어!"
 
+        # 구글 시트 최근 메모 5개 조회
+        recent_notes = services.get_all_notes(limit=5)
+        notes_lines = []
+        if recent_notes:
+            for n in recent_notes:
+                cat = n.get("분류", n.get("카테고리", "메모"))
+                cnt = n.get("내용", "")
+                if cnt:
+                    notes_lines.append(f"- [{cat}] {cnt}")
+        notes_text = "\n".join(notes_lines) if notes_lines else "오늘 특별히 남겨둔 메모는 없어."
+
+        # Gemini에게 실제로 전달되는 프롬프트에 메모(notes_text) 주입
         user_content = f"""
 친구 '정수'에게 하루를 토닥여주며 편안하게 건네는 저녁 브리핑을 작성해줘.
 
 [분량 및 형식 엄수]
-- **공백 포함 250~300자 내외로 작성할 것 (절대 400자를 넘기지 마).**
+- **공백 포함 250~350자 내외로 작성할 것 (절대 400자를 넘기지 마).**
 - "정수야, 오늘 하루도 정말 고생 많았어!"처럼 다정하게 이름을 부르며 시작할 것.
 - **절대 1, 2, 3 같은 번호나 목록 기호를 쓰지 말고 포근한 대화체 문단으로 이어줘.**
 
 [필수 내용]
 - 고생한 정수를 따뜻하게 위로하기
 - 건강: "자기 전에 저녁 약 잊지 말고 꼭 챙겨 먹어!"라고 당부하기
-- 남은 할 일 점검: {tasks_text}
+- 남은 할 일 & 메모 점검: 할 일({tasks_text})과 오늘/최근 메모({notes_text})를 가볍게 짚어주며 잘 챙겼는지 확인하기
 - 편안한 밤 보내라는 따뜻한 인사로 마무리하기
 """
         return call_gemini_rest(user_content)
