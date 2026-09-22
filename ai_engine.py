@@ -4,6 +4,7 @@ import requests
 from datetime import datetime, timedelta
 import streamlit as st
 import services
+import time
 
 CANDIDATE_MODELS = [
     "gemini-3.6-flash",
@@ -52,13 +53,18 @@ def call_gemini_rest(prompt_text):
         "generationConfig": {"temperature": 0.7}
     }
     last_error = None
+    
+    # 등록된 키 개수만큼 순회하며 여유 있는 키 탐색
     for _ in range(len(keys)):
         api_key = get_next_api_key()
         headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
+        
         for model in CANDIDATE_MODELS:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
             try:
-                res = requests.post(url, headers=headers, json=payload, timeout=20)
+                res = requests.post(url, headers=headers, json=payload, timeout=15)
+                
+                # 성공
                 if res.status_code == 200:
                     data = res.json()
                     candidates = data.get("candidates", [])
@@ -67,6 +73,13 @@ def call_gemini_rest(prompt_text):
                         if parts:
                             return parts[0].get("text", "")
                     return "정수야, 답변을 잘 받아오지 못했어."
+                
+                # 429 (할당량 초과)인 경우: 이 키는 건너뛰고 다음 키로 즉시 교체
+                elif res.status_code == 429:
+                    last_error = f"429 할당량 초과 (Key 교체 시도 중...)"
+                    time.sleep(1)
+                    break  # 현재 키의 모델 시도를 중단하고 바깥 루프(다음 키)로 이동
+                    
                 else:
                     err_msg = res.json().get("error", {}).get("message", res.text)
                     last_error = f"{res.status_code} ({model}) - {err_msg}"
@@ -75,6 +88,7 @@ def call_gemini_rest(prompt_text):
             except Exception as e:
                 last_error = str(e)
                 break
+                
     raise Exception(f"호출 실패: {last_error}")
 
 def generate_daily_briefing():
