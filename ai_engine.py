@@ -225,16 +225,27 @@ def chat_with_taemin(user_message, chat_history=None):
         success, res_text = services.complete_or_delete_task(target_kw)
         return f"✅ **{res_text}**" if success else f"💬 {res_text}"
 
-    # 2. 할 일 & 메모 저장 (구글 시트 + 구글 Tasks 둘 다 확실하게 기록!)
+# 2. 할 일 & 메모 저장 (구글 시트 + 구글 Tasks)
     memo_keywords = ["기억해줘", "메모해줘", "적어둬", "남겨줘", "해야 돼", "해야 해", "할 일", "챙겨줘"]
     if any(k in msg_clean for k in memo_keywords):
-        # 1) 구글 시트에 영구 보관 (서재 & 아카이브용)
-        # 키워드를 가볍게 다듬어 내용 추출
         clean_content = msg_clean
         for kw in ["기억해줘", "메모해줘", "적어둬", "남겨줘"]:
             clean_content = clean_content.replace(kw, "").strip()
         
-        sheet_success = services.save_note(category="메모", content=clean_content or msg_clean)
+        # 1) 구글 시트에 직접 저장 시도 및 상세 에러 포착
+        try:
+            gc = services.get_sheet_client()
+            if not gc:
+                return "❌ 오류: 구글 서비스 계정 인증(creds) 객체를 생성하지 못했어."
+            
+            # SPREADSHEET_NAME 시트 열기
+            sh = gc.open(services.SPREADSHEET_NAME)
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            sh.sheet1.append_row([now_str, "메모", clean_content or msg_clean])
+            sheet_success = True
+        except Exception as sheet_err:
+            sheet_success = False
+            error_detail = str(sheet_err)
         
         # 2) 구글 Tasks에도 추가 시도
         try:
@@ -243,7 +254,7 @@ def chat_with_taemin(user_message, chat_history=None):
         except Exception:
             pass
 
-        # 시트 저장 캐시 즉시 비우기 (화면 갱신 시 사이드바에 바로 뜨도록)
+        # 캐시 즉시 초기화
         if hasattr(st, "cache_data"):
             st.cache_data.clear()
 
@@ -254,7 +265,7 @@ def chat_with_taemin(user_message, chat_history=None):
                 f"브리핑할 때도 꼼꼼하게 챙겨서 알려줄게!"
             )
         else:
-            return "정수야, 메모를 적어두려 했는데 시트 연결에 잠깐 문제가 생겼어."
+            return f"❌ 구글 시트 저장 실패 상세 원인:\n\n`{error_detail}`"
 
     # 3. 일정/이동 경로 안내
     context_addon = ""
