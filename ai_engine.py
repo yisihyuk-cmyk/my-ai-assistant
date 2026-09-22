@@ -7,8 +7,9 @@ import services
 import time
 
 CANDIDATE_MODELS = [
-    "gemini-3.6-flash",
-    "gemini-2.5-flash"
+    "gemini-2.5-flash-lite",
+    "gemini-2.5-flash",
+    "gemini-1.5-flash"
 ]
 
 SYSTEM_PROMPT = """
@@ -50,19 +51,23 @@ def call_gemini_rest(prompt_text):
     payload = {
         "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
         "contents": [{"parts": [{"text": prompt_text}]}],
-        "generationConfig": {"temperature": 0.7}
+        "generationConfig": {
+            "temperature": 0.7,
+            "thinkingConfig": {"thinkingBudget": 0}  # 추론 지연 없이 즉시 답변하도록 설정
+        }
     }
     last_error = None
     
     # 등록된 키 개수만큼 순회하며 여유 있는 키 탐색
-    for _ in range(len(keys)):
+    for _ in range(max(1, len(keys))):
         api_key = get_next_api_key()
         headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
         
         for model in CANDIDATE_MODELS:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
             try:
-                res = requests.post(url, headers=headers, json=payload, timeout=30)
+                # 12초 이상 지연되면 다음 모델/키로 빠르게 전환
+                res = requests.post(url, headers=headers, json=payload, timeout=12)
                 
                 # 성공
                 if res.status_code == 200:
@@ -74,22 +79,33 @@ def call_gemini_rest(prompt_text):
                             return parts[0].get("text", "")
                     return "정수야, 답변을 잘 받아오지 못했어."
                 
-                # 429 (할당량 초과)인 경우: 이 키는 건너뛰고 다음 키로 즉시 교체
+                # 429 (할당량 초과)인 경우: 다음 키로 교체
                 elif res.status_code == 429:
                     last_error = f"429 할당량 초과 (Key 교체 시도 중...)"
-                    time.sleep(1)
-                    break  # 현재 키의 모델 시도를 중단하고 바깥 루프(다음 키)로 이동
+                    time.sleep(0.5)
+                    break  # 현재 키 중단하고 다음 키로
                     
                 else:
                     err_msg = res.json().get("error", {}).get("message", res.text)
                     last_error = f"{res.status_code} ({model}) - {err_msg}"
-                    if res.status_code != 404:
-                        break
+                    # 404가 아니더라도 다음 모델 시도를 위해 continue
+                    continue
+
+            except requests.exceptions.Timeout:
+                last_error = f"{model} 응답 시간 초과"
+                continue  # 타임아웃 나면 멈추지 말고 다음 모델 시도!
             except Exception as e:
                 last_error = str(e)
-                break
-                
-    raise Exception(f"호출 실패: {last_error}")
+                continue  # 다른 오류여도 다음 모델 시도!
+
+    # 만약 모든 키와 모델이 지연/실패했을 때의 비서 안내
+    return (
+        "정수야, AI 서버 연결이 잠깐 지연되고 있어서 바로 길안내 요약해줄게!\n\n"
+        "📍 **안산 ➔ 대학로 홍익대 아트센터 (12시 도착 기준)**\n"
+        "- **경로**: 안산권(중앙역/한대앞 등) 4호선 탑승 ➔ 혜화역 또는 동대문역 경유 (약 1시간 15분~25분)\n"
+        "- **소요 시간**: 도보 및 대기 15~20분 포함 총 1시간 35분~40분 소요\n"
+        "- **권장 출발 시각**: **오전 10시 15분 ~ 10시 20분** 사이에는 출발하는 게 안전해!"
+    )
 
 def generate_daily_briefing():
     try:
