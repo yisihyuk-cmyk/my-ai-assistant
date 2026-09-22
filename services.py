@@ -213,6 +213,7 @@ def get_sheet_client():
         return None
     return gspread.authorize(creds)
 
+@st.cache_data(ttl=60)
 def get_all_notes(limit=25):
     try:
         gc = get_sheet_client()
