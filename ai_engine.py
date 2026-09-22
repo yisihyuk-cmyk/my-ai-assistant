@@ -267,23 +267,44 @@ def chat_with_taemin(user_message, chat_history=None):
         else:
             return f"❌ 구글 시트 저장 실패 상세 원인:\n\n`{error_detail}`"
 
-    # 3. 일정/이동 경로 안내
+# 3. 일정/이동 경로 안내
     context_addon = ""
-    if any(k in msg_clean for k in ["출발", "몇 시에", "어떻게 가", "얼마나 걸려", "이동"]):
+    route_keywords = ["출발", "몇 시에", "어떻게 가", "얼마나 걸려", "이동", "가는 길", "길안내", "위치"]
+    if any(k in msg_clean for k in route_keywords):
         try:
-            events = services.fetch_today_events()
+            # 날짜 파악
+            target_date = datetime.now()
+            date_label = "오늘"
+            if "내일" in msg_clean:
+                target_date = datetime.now() + timedelta(days=1)
+                date_label = "내일"
+            elif "모레" in msg_clean:
+                target_date = datetime.now() + timedelta(days=2)
+                date_label = "모레"
+
+            # 날짜에 맞는 일정 가져오기 (fetch_events_by_date가 있으면 호출, 없으면 fetch_today_events)
+            if hasattr(services, "fetch_events_by_date"):
+                events = services.fetch_events_by_date(target_date)
+            else:
+                events = services.fetch_today_events()
+
             travel_guidance_list = []
             for ev in events:
                 summary = ev.get("summary", "")
                 location = ev.get("location", "")
                 start_raw = ev.get("start", {}).get("dateTime", "")
+                
+                # 장소가 적혀있는 일정이라면
                 if location and "T" in start_raw:
                     dt = datetime.fromisoformat(start_raw.split("+")[0])
-                    travel_guidance_list.append(services.get_departure_guidance(summary, location, dt))
+                    guidance = services.get_departure_guidance(summary, location, dt)
+                    if guidance:
+                        travel_guidance_list.append(guidance)
+            
             if travel_guidance_list:
-                context_addon = "\n\n[오늘 일정 경로 안내]\n" + "\n".join(travel_guidance_list)
-        except Exception:
-            pass
+                context_addon = f"\n\n[{date_label} 일정 이동 경로 안내 참고자료]\n" + "\n".join(travel_guidance_list)
+        except Exception as e:
+            print(f"❌ 이동 경로 안내 생성 실패: {e}")
 
     # 4. 일반 대화
     try:
