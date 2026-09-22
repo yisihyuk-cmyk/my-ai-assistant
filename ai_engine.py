@@ -62,7 +62,7 @@ def call_gemini_rest(prompt_text):
         for model in CANDIDATE_MODELS:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
             try:
-                res = requests.post(url, headers=headers, json=payload, timeout=15)
+                res = requests.post(url, headers=headers, json=payload, timeout=30)
                 
                 # 성공
                 if res.status_code == 200:
@@ -282,7 +282,7 @@ def chat_with_taemin(user_message, chat_history=None):
                 target_date = datetime.now() + timedelta(days=2)
                 date_label = "모레"
 
-            # 날짜에 맞는 일정 가져오기 (fetch_events_by_date가 있으면 호출, 없으면 fetch_today_events)
+            # 날짜에 맞는 일정 가져오기
             if hasattr(services, "fetch_events_by_date"):
                 events = services.fetch_events_by_date(target_date)
             else:
@@ -294,7 +294,7 @@ def chat_with_taemin(user_message, chat_history=None):
                 location = ev.get("location", "")
                 start_raw = ev.get("start", {}).get("dateTime", "")
                 
-                # 장소가 적혀있는 일정이라면
+                # 장소가 적혀있는 일정이라면 카카오 내비/경로 계산
                 if location and "T" in start_raw:
                     dt = datetime.fromisoformat(start_raw.split("+")[0])
                     guidance = services.get_departure_guidance(summary, location, dt)
@@ -302,13 +302,22 @@ def chat_with_taemin(user_message, chat_history=None):
                         travel_guidance_list.append(guidance)
             
             if travel_guidance_list:
-                context_addon = f"\n\n[{date_label} 일정 이동 경로 안내 참고자료]\n" + "\n".join(travel_guidance_list)
+                context_addon = f"\n\n[{date_label} 캘린더 등록 일정 이동 경로 참고자료]\n" + "\n".join(travel_guidance_list)
         except Exception as e:
             print(f"❌ 이동 경로 안내 생성 실패: {e}")
 
-    # 4. 일반 대화
+    # 4. 일반 대화 및 길찾기 안내 답변
     try:
-        prompt = f"정수의 질문: {msg_clean}{context_addon}\n정수에게 번호 매김 없이 다정하고 편안한 반말로 답변해줘."
+        prompt = (
+            f"정수의 질문: {msg_clean}{context_addon}\n\n"
+            f"[답변 지침]\n"
+            f"1. 정수의 기본 출발지(집)는 '안산'이야.\n"
+            f"2. 만약 질문이 특정 장소(예: 홍대 아트센터 등)까지 몇 시에 출발해야 하는지 묻는 길찾기/이동 관련 질문이라면, "
+            f"안산에서 해당 목적지까지의 대중교통 및 이동 소요 시간(환승, 도보 여유 시간 15~20분 포함)을 고려해서 "
+            f"권장 출발 시각과 최적 이동 경로(지하철/버스 등)를 명확하고 꼼꼼하게 알려줘.\n"
+            f"3. 캘린더 일정 참고자료가 있다면 그 내용을 적극 활용해줘.\n"
+            f"4. 번호 매기기 형식 없이, 다정하고 친근한 친구 같은 반말로 답변해줘."
+        )
         return call_gemini_rest(prompt)
     except Exception as e:
         return f"정수야, 내가 답변하려다 잠깐 오류가 생겼어: {e}"
