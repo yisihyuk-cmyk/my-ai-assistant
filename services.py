@@ -303,14 +303,19 @@ def get_departure_guidance(event_title, event_location, event_start_dt, default_
         buffer_mins = 10
 
     duration = calculate_travel_duration(default_start, event_location, travel_mode=mode)
+    
+    # 카카오 검색에 실패하더라도 최소한의 예상 출발 시간 안내
     if not duration:
-        return f"📍 **[{event_title}]** 목적지: {event_location} (여유 있게 이동 권장)"
+        duration = 50  # 기본 50분 잡기
+        approx_text = "(대략적인 예상) "
+    else:
+        approx_text = ""
 
     total_need = duration + buffer_mins
     departure_time = event_start_dt - timedelta(minutes=total_need)
     return (
         f"🚗 **이동 안내 ({mode_text})**: '{event_title}'\n"
         f"- 목적지: {event_location}\n"
-        f"- 이동 소요: 약 {duration}분 (여유 {buffer_mins}분 포함 총 {total_need}분 소요)\n"
+        f"- 이동 소요: {approx_text}약 {duration}분 (여유 {buffer_mins}분 포함 총 {total_need}분)\n"
         f"- **권장 출발 시각: {departure_time.strftime('%H시 %M분')}**"
     )
