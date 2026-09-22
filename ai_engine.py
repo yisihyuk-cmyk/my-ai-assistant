@@ -215,6 +215,7 @@ def generate_evening_briefing():
 def chat_with_taemin(user_message, chat_history=None):
     msg_clean = user_message.strip()
     
+    # 1. 완료/삭제 처리
     finish_keywords = ["끝냈어", "완료했어", "마무리했어", "다 했어", "삭제해줘", "지워줘", "끝남"]
     if any(k in msg_clean for k in finish_keywords):
         target_kw = msg_clean
@@ -224,18 +225,38 @@ def chat_with_taemin(user_message, chat_history=None):
         success, res_text = services.complete_or_delete_task(target_kw)
         return f"✅ **{res_text}**" if success else f"💬 {res_text}"
 
-    task_keywords = ["해야 돼", "해야 해", "할 일 등록", "챙겨줘", "제출해야 돼", "작성해야 해", "입력해야 해", "업무 등록"]
-    if any(k in msg_clean for k in task_keywords):
-        due_time = datetime.utcnow() + timedelta(hours=12)
-        success, task_id = services.add_work_task(title=msg_clean, due_datetime=due_time)
-        if success:
-            return (
-                f"📌 **[할 일 등록 완료]**\n\n"
-                f"- 등록 내용: {msg_clean}\n"
-                f"- 정수야, 구글 Tasks에 잊지 않게 잘 적어뒀어.\n"
-                f"- 다 끝나면 **'{msg_clean.split()[0]} 끝냈어'**라고 편하게 말해줘!"
-            )
+    # 2. 할 일 & 메모 저장 (구글 시트 + 구글 Tasks 둘 다 확실하게 기록!)
+    memo_keywords = ["기억해줘", "메모해줘", "적어둬", "남겨줘", "해야 돼", "해야 해", "할 일", "챙겨줘"]
+    if any(k in msg_clean for k in memo_keywords):
+        # 1) 구글 시트에 영구 보관 (서재 & 아카이브용)
+        # 키워드를 가볍게 다듬어 내용 추출
+        clean_content = msg_clean
+        for kw in ["기억해줘", "메모해줘", "적어둬", "남겨줘"]:
+            clean_content = clean_content.replace(kw, "").strip()
+        
+        sheet_success = services.save_note(category="메모", content=clean_content or msg_clean)
+        
+        # 2) 구글 Tasks에도 추가 시도
+        try:
+            due_time = datetime.utcnow() + timedelta(hours=12)
+            services.add_work_task(title=msg_clean, due_datetime=due_time)
+        except Exception:
+            pass
 
+        # 시트 저장 캐시 즉시 비우기 (화면 갱신 시 사이드바에 바로 뜨도록)
+        if hasattr(st, "cache_data"):
+            st.cache_data.clear()
+
+        if sheet_success:
+            return (
+                f"📝 **[메모 및 할 일 저장 완료!]**\n\n"
+                f"정수야, 잊지 않게 서재 아카이브에 잘 적어뒀어: **'{clean_content or msg_clean}'**\n"
+                f"브리핑할 때도 꼼꼼하게 챙겨서 알려줄게!"
+            )
+        else:
+            return "정수야, 메모를 적어두려 했는데 시트 연결에 잠깐 문제가 생겼어."
+
+    # 3. 일정/이동 경로 안내
     context_addon = ""
     if any(k in msg_clean for k in ["출발", "몇 시에", "어떻게 가", "얼마나 걸려", "이동"]):
         try:
@@ -253,6 +274,7 @@ def chat_with_taemin(user_message, chat_history=None):
         except Exception:
             pass
 
+    # 4. 일반 대화
     try:
         prompt = f"정수의 질문: {msg_clean}{context_addon}\n정수에게 번호 매김 없이 다정하고 편안한 반말로 답변해줘."
         return call_gemini_rest(prompt)
