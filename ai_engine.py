@@ -114,15 +114,20 @@ def generate_daily_briefing():
         active_tasks = services.get_active_tasks()
         
         # 1. 구글 시트 최근 메모 5개 조회
+        # 구글 시트 최근 메모 5개 조회 가공 부분
         recent_notes = services.get_all_notes(limit=5)
         notes_lines = []
         if recent_notes:
             for n in recent_notes:
                 cat = n.get("분류", n.get("카테고리", "메모"))
                 cnt = n.get("내용", "")
+                created_at = n.get("시간", "")  # 시트 A열의 작성 시각 추출
+                
+                # 작성 시각을 포함해 프롬프트에 제공
+                time_prefix = f"({created_at} 작성) " if created_at else ""
                 if cnt:
-                    notes_lines.append(f"- [{cat}] {cnt}")
-        notes_text = "\n".join(notes_lines) if notes_lines else "최근 따로 남겨둔 특별한 메모는 없어."
+                    notes_lines.append(f"- [{cat}] {time_prefix}{cnt}")
+        notes_text = "\n".join(notes_lines) if notes_lines else "오늘 특별히 남겨둔 메모는 없어."
         
         # 첫 번째 일정 장소 기준 날씨, 없으면 안산
         target_location = "안산"
@@ -195,14 +200,19 @@ def generate_evening_briefing():
         tasks_text = "\n".join(tasks_summary) if tasks_summary else "밀린 할 일 없이 다 잘 끝냈어!"
 
         # 구글 시트 최근 메모 5개 조회
+        # 구글 시트 최근 메모 5개 조회 가공 부분
         recent_notes = services.get_all_notes(limit=5)
         notes_lines = []
         if recent_notes:
             for n in recent_notes:
                 cat = n.get("분류", n.get("카테고리", "메모"))
                 cnt = n.get("내용", "")
+                created_at = n.get("시간", "")  # 시트 A열의 작성 시각 추출
+                
+                # 작성 시각을 포함해 프롬프트에 제공
+                time_prefix = f"({created_at} 작성) " if created_at else ""
                 if cnt:
-                    notes_lines.append(f"- [{cat}] {cnt}")
+                    notes_lines.append(f"- [{cat}] {time_prefix}{cnt}")
         notes_text = "\n".join(notes_lines) if notes_lines else "오늘 특별히 남겨둔 메모는 없어."
 
         # Gemini에게 실제로 전달되는 프롬프트에 메모(notes_text) 주입
