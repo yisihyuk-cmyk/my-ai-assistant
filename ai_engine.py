@@ -60,7 +60,7 @@ def call_gemini_rest(prompt_text):
     last_error = None
     
     # 안정적인 구글 공식 모델 목록
-    models = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
+    models = ["gemini-3.5-flash-lite", "gemini-3.5-flash"]
     
     # 등록된 키 개수만큼 순회하며 탐색
     for _ in range(max(1, len(keys))):
