@@ -303,15 +303,30 @@ def generate_evening_briefing():
 def chat_with_taemin(user_message, chat_history=None):
     msg_clean = user_message.strip()
     
-    # 1. 완료/삭제 처리
-    finish_keywords = ["끝냈어", "완료했어", "마무리했어", "다 했어", "삭제해줘", "지워줘", "끝남"]
+    # 1. 완료/삭제 처리 (구글 시트 메모 + Tasks 할 일 동시 처리)
+    finish_keywords = ["삭제해줘", "지워줘", "삭제", "완료했어", "끝냈어", "마무리했어", "다 했어"]
     if any(k in msg_clean for k in finish_keywords):
+        # 삭제 대상 키워드 추출 (예: "도우 생일 카페는 다녀오지 못했어.. 일정 끝났으니 메모에서 삭제해줄 수 있어?")
+        # 조사 및 요청 문구 정제
         target_kw = msg_clean
-        for k in finish_keywords:
-            target_kw = target_kw.replace(k, "")
-        target_kw = re.sub(r"[은는이가을를]", "", target_kw).strip()
-        success, res_text = services.complete_or_delete_task(target_kw)
-        return f"✅ **{res_text}**" if success else f"💬 {res_text}"
+        for kw in ["메모에서", "일정에서", "할 일에서", "삭제해줄 수 있어?", "삭제해줘", "지워줘", "삭제", "완료했어", "끝냈어", "다 했어", "다녀오지 못했어", "못했어", "끝났으니"]:
+            target_kw = target_kw.replace(kw, "")
+        target_kw = re.sub(r"[은는이가을를\.,\?!]", " ", target_kw).strip()
+        # 여러 단어 중 핵심 단어 1~2개 추출 (공백 기준 첫 단어들)
+        words = [w for w in target_kw.split() if len(w) >= 2]
+        search_kw = words[0] if words else target_kw
+
+        # 1) 구글 시트 메모에서 삭제 시도
+        sheet_success, sheet_msg = services.delete_sheet_note(search_kw)
+        
+        # 2) 구글 Tasks에서도 삭제/완료 시도
+        task_success, task_msg = services.complete_or_delete_task(search_kw)
+
+        if sheet_success or task_success:
+            return f"🗑️ **[삭제 완료!]** 정수야, 요청한 대로 **'{search_kw}'** 메모를 깔끔하게 지웠어! 이제 서재 목록에서도 안 보일 거야."
+        else:
+            # 못 찾았더라도 Gemini가 말로만 넘기지 않게 상태 안내
+            return f"💬 정수야, '{search_kw}' 관련 메모를 찾아서 지우려고 했는데 이미 지워졌거나 찾지 못했어."
 
 # 2. 할 일 & 메모 저장 (구글 시트 + 구글 Tasks)
     memo_keywords = ["기억해줘", "메모해줘", "적어둬", "남겨줘", "해야 돼", "해야 해", "할 일", "챙겨줘"]
