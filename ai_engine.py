@@ -187,6 +187,8 @@ def generate_daily_briefing():
 - 할 일: {tasks_text}
 - 최근 중요 메모/생각: {notes_text} (정수가 최근 메모해 둔 내용이 있다면 잊지 않게 자연스럽게 한 번 언급해줘)
 - 기분 좋은 한마디 응원으로 마무리하기
+- 기준 시각: 현재 날짜 및 시각은 {datetime.now().strftime('%Y년 %m월 %d일 %H시 %M분')}이야.
+- 메모 점검: 메모 목록({notes_text})의 작성 시각을 감안해서, 과거(어제 등)에 적힌 '내일'은 오늘을 의미하므로 시점을 올바르게 해석해서 챙겨줘.
 """
         return call_gemini_rest(user_content)
     except Exception as e:
