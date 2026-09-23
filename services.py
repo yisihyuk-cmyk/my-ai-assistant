@@ -319,3 +319,37 @@ def get_departure_guidance(event_title, event_location, event_start_dt, default_
         f"- 이동 소요: {approx_text}약 {duration}분 (여유 {buffer_mins}분 포함 총 {total_need}분)\n"
         f"- **권장 출발 시각: {departure_time.strftime('%H시 %M분')}**"
     )
+def delete_sheet_note(keyword: str):
+    """구글 시트(아카이브)에서 특정 키워드가 포함된 메모 행을 찾아 삭제"""
+    try:
+        gc = get_sheet_client()
+        if not gc:
+            return False, "구글 시트 연동 실패"
+        sh = gc.open(SPREADSHEET_NAME)
+        worksheet = sh.sheet1
+        
+        # 전체 행 가져오기 (1행 헤더 포함)
+        all_values = worksheet.get_all_values()
+        if not all_values or len(all_values) <= 1:
+            return False, "삭제할 메모가 없어."
+        
+        # 키워드와 매칭되는 행 번호 찾기 (뒤에서부터 찾아 삭제)
+        row_to_delete = None
+        for idx in range(len(all_values) - 1, 0, -1):  # 역순 탐색 (최신 행 우선)
+            row = all_values[idx]
+            # row[2]는 '내용' 열
+            content = row[2] if len(row) > 2 else "".join(row)
+            if keyword in content:
+                row_to_delete = idx + 1  # 구글 시트는 1-indexed
+                break
+        
+        if row_to_delete:
+            worksheet.delete_rows(row_to_delete)
+            # 캐시 비우기
+            if hasattr(st, "cache_data"):
+                st.cache_data.clear()
+            return True, f"'{keyword}' 관련 메모를 시트에서 삭제했어!"
+        
+        return False, f"'{keyword}'에 해당하는 메모를 찾지 못했어."
+    except Exception as e:
+        return False, f"메모 삭제 중 오류 발생: {e}"
