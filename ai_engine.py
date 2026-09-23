@@ -114,19 +114,49 @@ def generate_daily_briefing():
         active_tasks = services.get_active_tasks()
         
         # 1. 구글 시트 최근 메모 5개 조회
-        # 구글 시트 최근 메모 5개 조회 가공 부분
+        # 구글 시트 최근 메모 가공
         recent_notes = services.get_all_notes(limit=5)
         notes_lines = []
+        today_date = datetime.now().date()
+        
         if recent_notes:
             for n in recent_notes:
-                cat = n.get("분류", n.get("카테고리", "메모"))
-                cnt = n.get("내용", "")
-                created_at = n.get("시간", "")  # 시트 A열의 작성 시각 추출
+                # 1. 분류, 내용, 작성시각을 어떤 헤더명이든 안전하게 추출
+                cat = n.get("분류") or n.get("카테고리") or "메모"
+                cnt = n.get("내용") or n.get("content") or ""
+                # "시간" 키뿐 아니라 대소문자나 다른 헤더 이름도 포괄
+                created_at_raw = n.get("시간") or n.get("일시") or n.get("날짜") or n.get("date") or ""
+                if not created_at_raw and list(n.values()):
+                    created_at_raw = list(n.values())[0]  # 시트의 맨 첫 번째 열 값
                 
-                # 작성 시각을 포함해 프롬프트에 제공
-                time_prefix = f"({created_at} 작성) " if created_at else ""
+                created_at_str = str(created_at_raw).strip()
+                
+                # 2. 날짜 차이 계산하여 상대 시점 단어('내일') 자동 보정
+                memo_date = None
+                if created_at_str:
+                    try:
+                        # 2026-09-22 형식 추출
+                        memo_date = datetime.fromisoformat(created_at_str[:10]).date()
+                    except Exception:
+                        pass
+                
+                adjusted_cnt = cnt
+                if memo_date:
+                    days_diff = (today_date - memo_date).days
+                    if days_diff == 1:
+                        # 어제 작성한 메모인데 "내일"이라고 적혀있다면 -> "오늘"로 변경
+                        adjusted_cnt = adjusted_cnt.replace("내일", "오늘")
+                        prefix = f"(어제 {created_at_str[11:16]} 작성)"
+                    elif days_diff == 0:
+                        prefix = f"(오늘 {created_at_str[11:16]} 작성)"
+                    else:
+                        prefix = f"({created_at_str[:10]} 작성)"
+                else:
+                    prefix = f"({created_at_str})" if created_at_str else ""
+
                 if cnt:
-                    notes_lines.append(f"- [{cat}] {time_prefix}{cnt}")
+                    notes_lines.append(f"- [{cat}] {prefix} {adjusted_cnt}")
+                    
         notes_text = "\n".join(notes_lines) if notes_lines else "오늘 특별히 남겨둔 메모는 없어."
         
         # 첫 번째 일정 장소 기준 날씨, 없으면 안산
@@ -206,20 +236,49 @@ def generate_evening_briefing():
         tasks_summary = [f"- {t.get('title')}" for t in active_tasks if t.get('title')]
         tasks_text = "\n".join(tasks_summary) if tasks_summary else "밀린 할 일 없이 다 잘 끝냈어!"
 
-        # 구글 시트 최근 메모 5개 조회
-        # 구글 시트 최근 메모 5개 조회 가공 부분
+        # 구글 시트 최근 메모 가공
         recent_notes = services.get_all_notes(limit=5)
         notes_lines = []
+        today_date = datetime.now().date()
+        
         if recent_notes:
             for n in recent_notes:
-                cat = n.get("분류", n.get("카테고리", "메모"))
-                cnt = n.get("내용", "")
-                created_at = n.get("시간", "")  # 시트 A열의 작성 시각 추출
+                # 1. 분류, 내용, 작성시각을 어떤 헤더명이든 안전하게 추출
+                cat = n.get("분류") or n.get("카테고리") or "메모"
+                cnt = n.get("내용") or n.get("content") or ""
+                # "시간" 키뿐 아니라 대소문자나 다른 헤더 이름도 포괄
+                created_at_raw = n.get("시간") or n.get("일시") or n.get("날짜") or n.get("date") or ""
+                if not created_at_raw and list(n.values()):
+                    created_at_raw = list(n.values())[0]  # 시트의 맨 첫 번째 열 값
                 
-                # 작성 시각을 포함해 프롬프트에 제공
-                time_prefix = f"({created_at} 작성) " if created_at else ""
+                created_at_str = str(created_at_raw).strip()
+                
+                # 2. 날짜 차이 계산하여 상대 시점 단어('내일') 자동 보정
+                memo_date = None
+                if created_at_str:
+                    try:
+                        # 2026-09-22 형식 추출
+                        memo_date = datetime.fromisoformat(created_at_str[:10]).date()
+                    except Exception:
+                        pass
+                
+                adjusted_cnt = cnt
+                if memo_date:
+                    days_diff = (today_date - memo_date).days
+                    if days_diff == 1:
+                        # 어제 작성한 메모인데 "내일"이라고 적혀있다면 -> "오늘"로 변경
+                        adjusted_cnt = adjusted_cnt.replace("내일", "오늘")
+                        prefix = f"(어제 {created_at_str[11:16]} 작성)"
+                    elif days_diff == 0:
+                        prefix = f"(오늘 {created_at_str[11:16]} 작성)"
+                    else:
+                        prefix = f"({created_at_str[:10]} 작성)"
+                else:
+                    prefix = f"({created_at_str})" if created_at_str else ""
+
                 if cnt:
-                    notes_lines.append(f"- [{cat}] {time_prefix}{cnt}")
+                    notes_lines.append(f"- [{cat}] {prefix} {adjusted_cnt}")
+                    
         notes_text = "\n".join(notes_lines) if notes_lines else "오늘 특별히 남겨둔 메모는 없어."
 
         # Gemini에게 실제로 전달되는 프롬프트에 메모(notes_text) 주입
