@@ -117,26 +117,29 @@ def fetch_today_events(target_date=None):
     
     cal_id = CALENDAR_ID if CALENDAR_ID else "primary"
     
-    # 한국 시간 기준 오늘 날짜 계산
+    # 한국 시간 기준 당일 00:00:00 ~ 23:59:59 (RFC3339 규격)
     now_kst = datetime.now(timezone.utc).astimezone(KST)
     if target_date is None:
         target_date = now_kst
         
-    start_of_day = datetime(target_date.year, target_date.month, target_date.day, 0, 0, 0, tzinfo=KST).isoformat()
-    end_of_day = datetime(target_date.year, target_date.month, target_date.day, 23, 59, 59, tzinfo=KST).isoformat()
+    start_dt = datetime(target_date.year, target_date.month, target_date.day, 0, 0, 0, tzinfo=KST)
+    end_dt = datetime(target_date.year, target_date.month, target_date.day, 23, 59, 59, tzinfo=KST)
+    
+    # RFC3339 포맷 변환 (예: 2026-09-23T00:00:00+09:00)
+    time_min = start_dt.isoformat()
+    time_max = end_dt.isoformat()
     
     try:
         events_result = service.events().list(
             calendarId=cal_id,
-            timeMin=start_of_day,
-            timeMax=end_of_day,
+            timeMin=time_min,
+            timeMax=time_max,
             singleEvents=True,
             orderBy="startTime"
         ).execute()
-        items = events_result.get("items", [])
-        return items
+        return events_result.get("items", [])
     except Exception as e:
-        print(f"Calendar API 조회 오류 ({cal_id}): {e}")
+        print(f"❌ Calendar API 조회 오류 ({cal_id}): {e}")
         return []
 
 # --- [5] 구글 Tasks 관리 ---
