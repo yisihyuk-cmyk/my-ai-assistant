@@ -104,38 +104,44 @@ def call_gemini_rest(prompt_text):
     return f"정수야, AI 연결이 일시적으로 원활하지 않아서 답변을 불러오지 못했어. (원인: {last_error})"
 
 def generate_daily_briefing():
+    debug_logs = []
     try:
+        # 1. 만료 태스크 정리
         try:
             services.clean_expired_tasks(hours_limit=24)
+        except Exception as te:
+            debug_logs.append(f"태스크정리오류: {te}")
+        
+        # 2. 캘린더 일정 조회
+        try:
+            events = services.fetch_today_events()
+            debug_logs.append(f"캘린더일정수: {len(events)}개")
+        except Exception as ce:
+            events = []
+            debug_logs.append(f"캘린더오류: {ce}")
+            
+        # 3. 할 일 조회
+        try:
+            active_tasks = services.get_active_tasks()
         except Exception:
-            pass
+            active_tasks = []
         
-        events = services.fetch_today_events()
-        active_tasks = services.get_active_tasks()
-        
-        # 1. 구글 시트 최근 메모 5개 조회
-        # 구글 시트 최근 메모 가공
+        # 4. 메모 조회
         recent_notes = services.get_all_notes(limit=5)
         notes_lines = []
         today_date = datetime.now().date()
-        
         if recent_notes:
             for n in recent_notes:
-                # 1. 분류, 내용, 작성시각을 어떤 헤더명이든 안전하게 추출
                 cat = n.get("분류") or n.get("카테고리") or "메모"
                 cnt = n.get("내용") or n.get("content") or ""
-                # "시간" 키뿐 아니라 대소문자나 다른 헤더 이름도 포괄
-                created_at_raw = n.get("시간") or n.get("일시") or n.get("날짜") or n.get("date") or ""
+                created_at_raw = n.get("시간") or n.get("일시") or n.get("날짜") or ""
                 if not created_at_raw and list(n.values()):
-                    created_at_raw = list(n.values())[0]  # 시트의 맨 첫 번째 열 값
-                
+                    created_at_raw = list(n.values())[0]
                 created_at_str = str(created_at_raw).strip()
                 
-                # 2. 날짜 차이 계산하여 상대 시점 단어('내일') 자동 보정
                 memo_date = None
                 if created_at_str:
                     try:
-                        # 2026-09-22 형식 추출
                         memo_date = datetime.fromisoformat(created_at_str[:10]).date()
                     except Exception:
                         pass
@@ -144,11 +150,10 @@ def generate_daily_briefing():
                 if memo_date:
                     days_diff = (today_date - memo_date).days
                     if days_diff == 1:
-                        # 어제 작성한 메모인데 "내일"이라고 적혀있다면 -> "오늘"로 변경
                         adjusted_cnt = adjusted_cnt.replace("내일", "오늘")
-                        prefix = f"(어제 {created_at_str[11:16]} 작성)"
+                        prefix = f"(어제 작성)"
                     elif days_diff == 0:
-                        prefix = f"(오늘 {created_at_str[11:16]} 작성)"
+                        prefix = f"(오늘 작성)"
                     else:
                         prefix = f"({created_at_str[:10]} 작성)"
                 else:
@@ -156,22 +161,24 @@ def generate_daily_briefing():
 
                 if cnt:
                     notes_lines.append(f"- [{cat}] {prefix} {adjusted_cnt}")
-                    
         notes_text = "\n".join(notes_lines) if notes_lines else "오늘 특별히 남겨둔 메모는 없어."
-        
-        # 첫 번째 일정 장소 기준 날씨, 없으면 안산
+
+        # 5. 날씨 조회 (안산 기본)
         target_location = "안산"
         for ev in events:
             loc = ev.get("location", "").strip()
             if loc:
                 target_location = loc
                 break
-                
-        weather_info = services.get_today_weather(target_location)
         
+        try:
+            weather_info = services.get_today_weather(target_location)
+        except Exception as we:
+            weather_info = f"날씨 정보를 일시적으로 확인하지 못했어 ({we}). 일교차 조심해!"
+
+        # 6. 일정 요약
         events_summary = []
         travel_guidance_list = []
-        
         for ev in events:
             summary = ev.get("summary", "제목 없음")
             start_raw = ev.get("start", {}).get("dateTime", ev.get("start", {}).get("date", ""))
@@ -191,43 +198,41 @@ def generate_daily_briefing():
                     clean_time = start_raw.split("+")[0]
                     dt = datetime.fromisoformat(clean_time)
                     guidance = services.get_departure_guidance(summary, location, dt)
-                    travel_guidance_list.append(guidance)
+                    if guidance:
+                        travel_guidance_list.append(guidance)
                 except Exception:
                     pass
 
-        schedule_text = "\n".join(events_summary) if events_summary else "오늘 등록된 주요 일정은 없어."
+        schedule_text = "\n".join(events_summary) if events_summary else "오늘 캘린더에 등록된 특별한 일정은 없어."
         travel_text = "\n\n".join(travel_guidance_list) if travel_guidance_list else ""
         tasks_summary = [f"- {t.get('title')}" for t in active_tasks if t.get('title')]
         tasks_text = "\n".join(tasks_summary) if tasks_summary else "현재 밀려 있는 할 일은 없어."
 
-        # Gemini에게 실제로 전달되는 프롬프트에 메모(notes_text) 주입
         now_dt = datetime.now()
         current_time_str = now_dt.strftime('%Y년 %m월 %d일 %H시 %M분')
-        
+
+        # 프롬프트 명확화 (아침 브리핑임을 강력히 명시)
         user_content = f"""
-친구 '정수'에게 하루를 토닥여주며 편안하게 건네는 저녁 브리핑을 작성해줘.
+너는 다정한 친구 '태민이'야. 친구 '정수'에게 상쾌한 아침을 여는 '오늘 아침 브리핑'을 해줘. 저녁 인사를 절대 하지 마.
 
 [기준 정보]
-- 현재 시각: {current_time_str} (오늘 날짜를 반드시 기준으로 삼을 것)
+- 현재 시각: {current_time_str} (아침 브리핑)
 
-[분량 및 형식 엄수]
-- 공백 포함 250~350자 내외로 작성할 것 (절대 400자를 넘기지 마).
-- "정수야, 오늘 하루도 정말 고생 많았어!"처럼 다정하게 이름을 부르며 시작할 것.
-- 절대 1, 2, 3 같은 번호나 목록 기호를 쓰지 말고 포근한 대화체 문단으로 이어줘.
+[작성 지침]
+- 반드시 "정수야, 좋은 아침!" 또는 "정수야, 잘 잤어?" 같은 활기찬 아침 인사로 시작할 것.
+- 절대 1, 2, 3 같은 번호나 목록 기호를 쓰지 말고 부드럽고 다정한 대화체 줄글로 전할 것.
+- 분량: 공백 포함 250~350자 내외.
 
-[필수 내용]
-- 고생한 정수를 따뜻하게 위로하기
-- 건강: "자기 전에 저녁 약 잊지 말고 꼭 챙겨 먹어!"라고 당부하기
-- 남은 할 일 점검: {tasks_text}
-- 메모 점검: {notes_text}
-  * 주의: 메모 앞의 '(작성 시각)'을 반드시 확인해! 
-  * 예를 들어 어제 작성된 메모에 '내일 가야 해'라고 적혀 있다면, 그 '내일'은 어제의 내일인 바로 '오늘'을 뜻해. 메모 작성일과 현재 날짜({current_time_str})의 시점을 정확히 계산해서, 오늘 잘 다녀왔는지 챙겨묻거나 시점에 맞게 언급해줘.
-- 편안한 밤 보내라는 따뜻한 인사로 마무리하기
+[브리핑 내용]
+1. 날씨: {weather_info} (체감 날씨와 겉옷, 우산 여부 다정하게 챙기기)
+2. 건강: "아침 밥 든든히 챙겨 먹고 아침 약 꼭 챙겨 먹어!" 따뜻하게 당부하기
+3. 오늘 일정: {schedule_text} {travel_text}
+4. 할 일 & 메모: 할 일({tasks_text})과 챙겨볼 메모({notes_text}) 가볍게 짚어주기
+5. 활기찬 하루 보내라는 기분 좋은 응원으로 마무리하기
 """
-
         return call_gemini_rest(user_content)
     except Exception as e:
-        return f"정수야, 오늘 하루도 정말 수고 많았어! 편안한 저녁 보내. (오류: {e})"
+        return f"정수야, 좋은 아침! 아침 브리핑 생성 중 잠깐 오류가 생겼어. (상세 원인: {e}, 로그: {debug_logs})"
 
 
 def generate_evening_briefing():
