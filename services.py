@@ -323,7 +323,7 @@ def get_departure_guidance(event_title, event_location, event_start_dt, default_
         f"- **권장 출발 시각: {departure_time.strftime('%H시 %M분')}**"
     )
 def delete_sheet_note(keyword: str):
-    """구글 시트(아카이브)에서 특정 키워드가 포함된 메모 행을 찾아 삭제"""
+    """구글 시트(아카이브)에서 특정 키워드가 포함된 메모 행을 찾아 삭제 (다중 일치 항목도 처리)"""
     try:
         gc = get_sheet_client()
         if not gc:
@@ -331,27 +331,33 @@ def delete_sheet_note(keyword: str):
         sh = gc.open(SPREADSHEET_NAME)
         worksheet = sh.sheet1
         
-        # 전체 행 가져오기 (1행 헤더 포함)
         all_values = worksheet.get_all_values()
         if not all_values or len(all_values) <= 1:
             return False, "삭제할 메모가 없어."
         
-        # 키워드와 매칭되는 행 번호 찾기 (뒤에서부터 찾아 삭제)
-        row_to_delete = None
-        for idx in range(len(all_values) - 1, 0, -1):  # 역순 탐색 (최신 행 우선)
+        # 키워드 정리 (공백 제거하여 검색 적중률 향상)
+        clean_kw = keyword.replace(" ", "").strip()
+        if not clean_kw:
+            return False, "삭제할 키워드가 명확하지 않아."
+
+        # 역순으로 일치하는 행 번호 수집 (구글 시트는 1-indexed)
+        rows_to_delete = []
+        for idx in range(len(all_values) - 1, 0, -1):
             row = all_values[idx]
-            # row[2]는 '내용' 열
-            content = row[2] if len(row) > 2 else "".join(row)
-            if keyword in content:
-                row_to_delete = idx + 1  # 구글 시트는 1-indexed
-                break
+            # row 전체 텍스트 합치기 (공백 제거)
+            row_text = "".join(row).replace(" ", "")
+            if clean_kw in row_text:
+                rows_to_delete.append(idx + 1)
         
-        if row_to_delete:
-            worksheet.delete_rows(row_to_delete)
+        if rows_to_delete:
+            # 아래 행부터 차례대로 삭제해야 위의 행 번호가 흐트러지지 않음
+            for r_idx in rows_to_delete:
+                worksheet.delete_rows(r_idx)
+            
             # 캐시 비우기
             if hasattr(st, "cache_data"):
                 st.cache_data.clear()
-            return True, f"'{keyword}' 관련 메모를 시트에서 삭제했어!"
+            return True, f"'{keyword}' 관련 메모 {len(rows_to_delete)}건을 시트에서 깔끔하게 삭제했어!"
         
         return False, f"'{keyword}'에 해당하는 메모를 찾지 못했어."
     except Exception as e:
