@@ -328,20 +328,33 @@ def chat_with_taemin(user_message, chat_history=None):
         return f"정수야, 오늘은 **{date_str}**이야! 오늘도 좋은 하루 보내자."
 
     # 1. 완료/삭제 처리 (구글 시트 메모 + Tasks 할 일 동시 처리)
-    finish_keywords = ["삭제해줘", "지워줘", "삭제", "완료했어", "끝냈어", "마무리했어", "다 했어"]
+    finish_keywords = ["삭제해줘", "지워줘", "삭제", "완료했어", "끝냈어", "마무리했어", "다 했어", "지워"]
     if any(k in msg_clean for k in finish_keywords):
+        # 삭제 명령 및 조사, 문맥어 제거
         target_kw = msg_clean
-        for kw in ["메모에서", "일정에서", "할 일에서", "삭제해줄 수 있어?", "삭제해줘", "지워줘", "삭제", "완료했어", "끝냈어", "다 했어", "다녀오지 못했어", "못했어", "끝났으니"]:
-            target_kw = target_kw.replace(kw, "")
+        stopwords = [
+            "메모에서", "메모에", "메모", "일정에서", "일정에", "일정", "할 일에서", "할 일에", "할일",
+            "삭제해줄 수 있어?", "삭제해줄래?", "삭제해줘", "지워줄 수 있어?", "지워줘", "지워", "삭제",
+            "완료했어", "끝냈어", "다 했어", "다녀오지 못했어", "못했어", "끝났으니",
+            "관련 내용은", "관련 내용", "관련", "내용은", "내용", "것", "거"
+        ]
+        for sw in stopwords:
+            target_kw = target_kw.replace(sw, "")
+        
         target_kw = re.sub(r"[은는이가을를\.,\?!]", " ", target_kw).strip()
-        words = [w for w in target_kw.split() if len(w) >= 2]
-        search_kw = words[0] if words else target_kw
+        words = [w for w in target_kw.split() if len(w) >= 1]
+        
+        # 날짜 표현(예: "10월 2일")이 분리되지 않도록 공백으로 묶거나 첫 덩어리 추출
+        search_kw = " ".join(words) if words else target_kw
 
+        # 1) 구글 시트 메모에서 삭제 시도
         sheet_success, sheet_msg = services.delete_sheet_note(search_kw)
+        
+        # 2) 구글 Tasks에서도 삭제/완료 시도
         task_success, task_msg = services.complete_or_delete_task(search_kw)
 
         if sheet_success or task_success:
-            return f"🗑️ **[삭제 완료!]** 정수야, 요청한 대로 **'{search_kw}'** 메모를 깔끔하게 지웠어! 이제 서재 목록에서도 안 보일 거야."
+            return f"🗑️ **[삭제 완료!]** 정수야, 요청한 대로 **'{search_kw}'** 관련 메모를 깔끔하게 지웠어! 이제 서재 목록에서도 안 보일 거야."
         else:
             return f"💬 정수야, '{search_kw}' 관련 메모를 찾아서 지우려고 했는데 이미 지워졌거나 찾지 못했어."
 
