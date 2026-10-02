@@ -307,46 +307,56 @@ def generate_evening_briefing():
 
 def chat_with_taemin(user_message, chat_history=None):
     msg_clean = user_message.strip()
-    
+
+    # 0. 날짜 및 시간 질문 즉시 직접 답변 (환각 원천 차단)
+    date_keywords = [
+        "오늘 날짜", "몇 월 며칠", "몇월 며칠", "몇월 몇일", "몇 월 몇 일",
+        "무슨 요일", "오늘 며칠", "오늘 몇일", "지금 몇 시", "지금 몇시", "현재 시간", "현재 시각"
+    ]
+    if any(k in msg_clean for k in date_keywords):
+        from datetime import timezone
+        kst = timezone(timedelta(hours=9))
+        now_kst = datetime.now(timezone.utc).astimezone(kst)
+        weekdays = ["월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일"]
+        weekday_str = weekdays[now_kst.weekday()]
+        
+        date_str = now_kst.strftime(f"%Y년 %m월 %d일 {weekday_str}")
+        time_str = now_kst.strftime("%H시 %M분")
+        
+        if "몇 시" in msg_clean or "몇시" in msg_clean or "시간" in msg_clean or "시각" in msg_clean:
+            return f"정수야, 지금 시각은 **{date_str} {time_str}**이야!"
+        return f"정수야, 오늘은 **{date_str}**이야! 오늘도 좋은 하루 보내자."
+
     # 1. 완료/삭제 처리 (구글 시트 메모 + Tasks 할 일 동시 처리)
     finish_keywords = ["삭제해줘", "지워줘", "삭제", "완료했어", "끝냈어", "마무리했어", "다 했어"]
     if any(k in msg_clean for k in finish_keywords):
-        # 삭제 대상 키워드 추출 (예: "도우 생일 카페는 다녀오지 못했어.. 일정 끝났으니 메모에서 삭제해줄 수 있어?")
-        # 조사 및 요청 문구 정제
         target_kw = msg_clean
         for kw in ["메모에서", "일정에서", "할 일에서", "삭제해줄 수 있어?", "삭제해줘", "지워줘", "삭제", "완료했어", "끝냈어", "다 했어", "다녀오지 못했어", "못했어", "끝났으니"]:
             target_kw = target_kw.replace(kw, "")
         target_kw = re.sub(r"[은는이가을를\.,\?!]", " ", target_kw).strip()
-        # 여러 단어 중 핵심 단어 1~2개 추출 (공백 기준 첫 단어들)
         words = [w for w in target_kw.split() if len(w) >= 2]
         search_kw = words[0] if words else target_kw
 
-        # 1) 구글 시트 메모에서 삭제 시도
         sheet_success, sheet_msg = services.delete_sheet_note(search_kw)
-        
-        # 2) 구글 Tasks에서도 삭제/완료 시도
         task_success, task_msg = services.complete_or_delete_task(search_kw)
 
         if sheet_success or task_success:
             return f"🗑️ **[삭제 완료!]** 정수야, 요청한 대로 **'{search_kw}'** 메모를 깔끔하게 지웠어! 이제 서재 목록에서도 안 보일 거야."
         else:
-            # 못 찾았더라도 Gemini가 말로만 넘기지 않게 상태 안내
             return f"💬 정수야, '{search_kw}' 관련 메모를 찾아서 지우려고 했는데 이미 지워졌거나 찾지 못했어."
 
-# 2. 할 일 & 메모 저장 (구글 시트 + 구글 Tasks)
+    # 2. 할 일 & 메모 저장 (구글 시트 + 구글 Tasks)
     memo_keywords = ["기억해줘", "메모해줘", "적어둬", "남겨줘", "해야 돼", "해야 해", "할 일", "챙겨줘"]
     if any(k in msg_clean for k in memo_keywords):
         clean_content = msg_clean
         for kw in ["기억해줘", "메모해줘", "적어둬", "남겨줘"]:
             clean_content = clean_content.replace(kw, "").strip()
         
-        # 1) 구글 시트에 직접 저장 시도 및 상세 에러 포착
         try:
             gc = services.get_sheet_client()
             if not gc:
                 return "❌ 오류: 구글 서비스 계정 인증(creds) 객체를 생성하지 못했어."
             
-            # SPREADSHEET_NAME 시트 열기
             sh = gc.open(services.SPREADSHEET_NAME)
             now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             sh.sheet1.append_row([now_str, "메모", clean_content or msg_clean])
@@ -355,14 +365,12 @@ def chat_with_taemin(user_message, chat_history=None):
             sheet_success = False
             error_detail = str(sheet_err)
         
-        # 2) 구글 Tasks에도 추가 시도
         try:
             due_time = datetime.utcnow() + timedelta(hours=12)
             services.add_work_task(title=msg_clean, due_datetime=due_time)
         except Exception:
             pass
 
-        # 캐시 즉시 초기화
         if hasattr(st, "cache_data"):
             st.cache_data.clear()
 
@@ -375,12 +383,11 @@ def chat_with_taemin(user_message, chat_history=None):
         else:
             return f"❌ 구글 시트 저장 실패 상세 원인:\n\n`{error_detail}`"
 
-# 3. 일정/이동 경로 안내
+    # 3. 일정/이동 경로 안내
     context_addon = ""
     route_keywords = ["출발", "몇 시에", "어떻게 가", "얼마나 걸려", "이동", "가는 길", "길안내", "위치"]
     if any(k in msg_clean for k in route_keywords):
         try:
-            # 날짜 파악
             target_date = datetime.now()
             date_label = "오늘"
             if "내일" in msg_clean:
@@ -390,7 +397,6 @@ def chat_with_taemin(user_message, chat_history=None):
                 target_date = datetime.now() + timedelta(days=2)
                 date_label = "모레"
 
-            # 날짜에 맞는 일정 가져오기
             if hasattr(services, "fetch_events_by_date"):
                 events = services.fetch_events_by_date(target_date)
             else:
@@ -402,7 +408,6 @@ def chat_with_taemin(user_message, chat_history=None):
                 location = ev.get("location", "")
                 start_raw = ev.get("start", {}).get("dateTime", "")
                 
-                # 장소가 적혀있는 일정이라면 카카오 내비/경로 계산
                 if location and "T" in start_raw:
                     dt = datetime.fromisoformat(start_raw.split("+")[0])
                     guidance = services.get_departure_guidance(summary, location, dt)
@@ -416,24 +421,21 @@ def chat_with_taemin(user_message, chat_history=None):
 
     # 4. 일반 대화 및 길찾기 안내 답변
     try:
-        now_dt = datetime.now()
-        # 요일 매핑 (월~일)
+        from datetime import timezone
+        kst = timezone(timedelta(hours=9))
+        now_dt = datetime.now(timezone.utc).astimezone(kst)
         weekdays = ["월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일"]
         weekday_str = weekdays[now_dt.weekday()]
         current_time_str = now_dt.strftime(f"%Y년 %m월 %d일 {weekday_str} %H시 %M분")
 
         prompt = (
-            f"[기준 시스템 정보]\n"
+            f"[현재 한국 표준시 기준 정보]\n"
             f"- 현재 날짜 및 시각: {current_time_str}\n"
-            f"- 정수의 기본 출발지(집): 경기도 안산\n\n"
+            f"- 정수의 기본 위치: 경기도 안산\n\n"
             f"정수의 질문: {msg_clean}{context_addon}\n\n"
             f"[답변 지침]\n"
-            f"1. 날짜, 요일, 시간 관련 질문을 받으면 반드시 위의 [기준 시스템 정보]를 바탕으로 정확하게 알려줘.\n"
-            f"2. 만약 질문이 특정 장소까지 몇 시에 출발해야 하는지 묻는 길찾기/이동 관련 질문이라면, "
-            f"안산에서 해당 목적지까지의 대중교통 및 이동 소요 시간(환승, 도보 여유 시간 15~20분 포함)을 고려해서 "
-            f"권장 출발 시각과 최적 이동 경로(지하철/버스 등)를 명확하고 꼼꼼하게 알려줘.\n"
-            f"3. 캘린더 일정 참고자료가 있다면 그 내용을 적극 활용해줘.\n"
-            f"4. 번호 매기기 형식 없이, 다정하고 친근한 친구 같은 반말로 답변해줘."
+            f"1. 날짜, 시간, 일정과 관련된 이야기를 할 때는 반드시 위의 기준 정보({current_time_str})를 절대적 기준으로 삼을 것.\n"
+            f"2. 번호 매기기 형식 없이, 다정하고 친근한 친구 같은 반말로 답변해줘."
         )
         return call_gemini_rest(prompt)
     except Exception as e:
