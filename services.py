@@ -263,67 +263,71 @@ def get_coordinates(address_or_keyword):
         pass
     return None, None
 
-def calculate_travel_duration(start_place, end_place, travel_mode="car"):
-    start_x, start_y = get_coordinates(start_place)
-    end_x, end_y = get_coordinates(end_place)
-    if not start_x or not end_x:
-        return None
+def calculate_travel_duration(start_place, end_place, travel_mode="transit"):
+    """
+    출발지와 목적지 간 이동 소요 시간(분) 계산
+    - car: 카카오 모빌리티 자동차 경로 API
+    - transit: 수도권 광역 이동(안산 -> 서울 등)의 환승 및 도보 버퍼를 반영한 정밀 보정
+    """
+    # 1. 자동차 기준 소요 시간 산출
+    car_mins = None
+    try:
+        # 기존 카카오 길찾기 API 호출 로직 (좌표 변환 -> 경로 탐색)
+        start_coord = get_location_coordinates(start_place)
+        end_coord = get_location_coordinates(end_place)
+        if start_coord and end_coord:
+            car_mins = call_kakao_directions(start_coord, end_coord)
+    except Exception as e:
+        print(f"길찾기 API 호출 오류: {e}")
+
+    # 자동차 이동 모드일 경우
     if travel_mode == "car":
-        url = "https://apis-navi.kakaomobility.com/v1/directions"
-        headers = {
-            "Authorization": f"KakaoAK {KAKAO_REST_API_KEY}",
-            "Content-Type": "application/json"
-        }
-        params = {"origin": f"{start_x},{start_y}", "destination": f"{end_x},{end_y}", "priority": "RECOMMEND"}
-        try:
-            res = requests.get(url, headers=headers, params=params, timeout=5)
-            if res.status_code == 200:
-                routes = res.json().get("routes", [])
-                if routes and "summary" in routes[0]:
-                    return int(routes[0]["summary"]["duration"] / 60)
-        except Exception:
-            pass
-        return 50
-    else:
-        car_mins = calculate_travel_duration(start_place, end_place, travel_mode="car")
-        return int(car_mins * 1.3 + 15) if car_mins else 75
+        return car_mins if car_mins else 60
 
-def get_departure_guidance(event_title, event_location, event_start_dt, default_start="안산"):
-    title_lower = event_title.lower()
-    loc_lower = event_location.lower()
-    transit_keywords = ["연극", "뮤지컬", "관극", "대학로", "예술", "극장", "공연", "티켓"]
-    drive_keywords = ["컨설팅", "강의", "출장", "연수", "자문", "출강", "워크숍", "교육청", "학교"]
+    # 2. 대중교통(transit) 이동 모드일 경우 현실적 보정
+    if not car_mins:
+        # 경로 API 실패 시 안산->서울 주요 거점 기본값 (약 1시간 40분)
+        return 100
+
+    # 장거리 광역 이동(자차 기준 40분 이상 걸리는 서울/경기 북부권) 판별
+    if car_mins >= 40:
+        # 안산 출발 특성 반영: 4호선/수인분당선 배차, 서울 진입 후 지하철 환승 1~2회, 도보 15분 이상
+        # 예: 자차 50분 -> 50 * 1.5 + 25 = 100분 (1시간 40분)
+        # 예: 자차 60분 -> 60 * 1.5 + 25 = 115분 (1시간 55분)
+        estimated_transit = int(car_mins * 1.5 + 25)
+    else:
+        # 안산 시내 또는 인근(시흥/수원 등) 단거리 이동
+        # 예: 자차 20분 -> 20 * 1.3 + 15 = 41분
+        estimated_transit = int(car_mins * 1.3 + 15)
+
+    return estimated_transit
+
+def get_departure_guidance(summary, location, event_start_dt):
+    """일정 시작 시각과 장소를 기반으로 권장 출발 시각 및 안내 문구 생성"""
+    if not location:
+        return ""
+
+    start_place = "안산시"
+    # 대중교통 기준 소요 시간 계산
+    duration_mins = calculate_travel_duration(start_place, location, travel_mode="transit")
     
-    if any(k in title_lower or k in loc_lower for k in transit_keywords):
-        mode = "transit"
-        mode_text = "대중교통"
-        buffer_mins = 15
-    elif any(k in title_lower or k in loc_lower for k in drive_keywords):
-        mode = "car"
-        mode_text = "자차 운전"
-        buffer_mins = 20
-    else:
-        mode = "car"
-        mode_text = "이동"
-        buffer_mins = 10
+    # 약속 장소 도착 후 입장/자리 찾기 여유 버퍼(15분) 추가
+    total_buffer_mins = duration_mins + 15
+    departure_dt = event_start_dt - timedelta(minutes=total_buffer_mins)
 
-    duration = calculate_travel_duration(default_start, event_location, travel_mode=mode)
-    
-    # 카카오 검색에 실패하더라도 최소한의 예상 출발 시간 안내
-    if not duration:
-        duration = 50  # 기본 50분 잡기
-        approx_text = "(대략적인 예상) "
-    else:
-        approx_text = ""
+    dep_time_str = departure_dt.strftime("%H시 %M분")
+    event_time_str = event_start_dt.strftime("%H시 %M분")
 
-    total_need = duration + buffer_mins
-    departure_time = event_start_dt - timedelta(minutes=total_need)
+    hours = duration_mins // 60
+    mins = duration_mins % 60
+    duration_str = f"{hours}시간 {mins}분" if hours > 0 else f"{mins}분"
+
     return (
-        f"🚗 **이동 안내 ({mode_text})**: '{event_title}'\n"
-        f"- 목적지: {event_location}\n"
-        f"- 이동 소요: {approx_text}약 {duration}분 (여유 {buffer_mins}분 포함 총 {total_need}분)\n"
-        f"- **권장 출발 시각: {departure_time.strftime('%H시 %M분')}**"
+        f"- **[{summary}]** ({event_time_str} 시작 / 장소: {location})\n"
+        f"  * 안산에서 대중교통 이동 예상: 약 {duration_str} 소요 (도보/환승 여유 포함)\n"
+        f"  * 늦지 않으려면 최소 **{dep_time_str}**에는 집에서 출발하는 게 좋아!"
     )
+    
 def delete_sheet_note(keyword: str):
     """구글 시트(아카이브)에서 특정 키워드가 포함된 메모 행을 찾아 삭제 (다중 일치 항목도 처리)"""
     try:
