@@ -362,3 +362,64 @@ def delete_sheet_note(keyword: str):
         return False, f"'{keyword}'에 해당하는 메모를 찾지 못했어."
     except Exception as e:
         return False, f"메모 삭제 중 오류 발생: {e}"
+
+# --- [8] 구글 시트 기반 장기 대화 기억 ---
+def get_or_create_memory_worksheet():
+    """'대화기억' 워크시트를 가져오거나 없으면 생성"""
+    gc = get_sheet_client()
+    if not gc:
+        return None
+    try:
+        sh = gc.open(SPREADSHEET_NAME)
+        try:
+            ws = sh.worksheet("대화기억")
+        except gspread.WorksheetNotFound:
+            ws = sh.add_worksheet(title="대화기억", rows="1000", cols="4")
+            ws.append_row(["일시", "화자", "내용"])
+        return ws
+    except Exception as e:
+        print(f"대화기억 워크시트 로드 실패: {e}")
+        return None
+
+def save_chat_turn(user_text: str, assistant_text: str):
+    """정수의 질문과 태민이의 답변 한 턴을 구글 시트에 영구 저장"""
+    try:
+        ws = get_or_create_memory_worksheet()
+        if not ws:
+            return False
+        now_str = datetime.now(timezone.utc).astimezone(KST).strftime("%Y-%m-%d %H:%M:%S")
+        # 2줄로 깔끔하게 기록
+        ws.append_rows([
+            [now_str, "정수", user_text],
+            [now_str, "태민이", assistant_text]
+        ])
+        return True
+    except Exception as e:
+        print(f"대화기억 저장 실패: {e}")
+        return False
+
+def get_recent_chat_memory(limit_turns=5):
+    """구글 시트에서 최근 나눈 대화 기록을 텍스트 형태로 로드 (최근 limit_turns번의 티키타카)"""
+    try:
+        ws = get_or_create_memory_worksheet()
+        if not ws:
+            return ""
+        all_vals = ws.get_all_values()
+        if len(all_vals) <= 1:  # 헤더만 있는 경우
+            return ""
+        
+        # 최근 행들 가져오기 (1턴 = 2행)
+        rows_to_take = limit_turns * 2
+        recent_rows = all_vals[1:][-rows_to_take:]
+        
+        memory_lines = []
+        for row in recent_rows:
+            if len(row) >= 3:
+                time_str = row[0][:10]  # 날짜만 표시 (예: 2026-10-02)
+                speaker = row[1]
+                content = row[2]
+                memory_lines.append(f"[{time_str}] {speaker}: {content}")
+        return "\n".join(memory_lines)
+    except Exception as e:
+        print(f"대화기억 조회 실패: {e}")
+        return ""
