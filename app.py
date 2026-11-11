@@ -1,6 +1,6 @@
 import streamlit as st
 from datetime import datetime
-from streamlit_mic_recorder import speech_to_text  # <-- 이 줄 추가
+from streamlit_mic_recorder import speech_to_text
 import services
 from ai_engine import generate_daily_briefing, generate_evening_briefing, chat_with_taemin
 from streamlit_js_eval import get_geolocation
@@ -61,16 +61,22 @@ if "submitted_prompt" not in st.session_state:
 if "input_mode" not in st.session_state:
     st.session_state.input_mode = "text"
 
-# [추가] 무한 루프 방지용 이전 음성 텍스트 추적
 if "last_voice_input" not in st.session_state:
     st.session_state.last_voice_input = None
 
-# --- 4. 사이드바 (서재 & 아카이브) ---
+# --- 4. 사이드바 (서재, GPS, 도구) ---
 with st.sidebar:
     st.title("📁 태민 서재 & 아카이브")
-    if st.button("🔄 시트 새로고침", use_container_width=True):
-        st.cache_data.clear()  # <-- 이 줄을 추가해서 저장된 캐시를 즉시 비워줌
-        st.rerun()
+    
+    col_refresh, col_clear = st.columns(2)
+    with col_refresh:
+        if st.button("🔄 시트 새로고침", use_container_width=True):
+            st.cache_data.clear()
+            st.rerun()
+    with col_clear:
+        if st.button("🧹 화면 비우기", use_container_width=True):
+            st.session_state.messages = []
+            st.rerun()
         
     notes = services.get_all_notes(limit=20)
     if notes:
@@ -84,20 +90,15 @@ with st.sidebar:
     else:
         st.caption("기록된 메모가 없거나 시트 연결을 확인 중이야.")
 
-# 사이드바 하단 또는 상단에 GPS 위치 감지 블록 추가
-with st.sidebar:
     st.markdown("---")
     st.markdown("📍 **실시간 위치 (GPS)**")
     
-    # 브라우저에 위치 권한 요청
     loc = get_geolocation()
-
     if loc and "coords" in loc:
         user_lat = loc["coords"]["latitude"]
         user_lng = loc["coords"]["longitude"]
         st.session_state["user_coords"] = (user_lat, user_lng)
 
-        # 주소 변환해서 살짝 띄워주기
         current_loc_name = ""
         if hasattr(services, "get_address_from_coords"):
             try:
@@ -110,7 +111,6 @@ with st.sidebar:
         else:
             st.caption(f"📍 GPS 좌표 감지됨 ({user_lat:.3f}, {user_lng:.3f})")
     else:
-        # 권한 거부 또는 브라우저 로딩 중 기본값(안산)
         st.session_state["user_coords"] = None
         st.caption("안산(기본 출발지) 기준으로 작동 중이야. 여행지에서 정확한 길안내를 받으려면 브라우저 위치 권한을 허용해줘!")
 
@@ -189,22 +189,19 @@ with col_mic:
 
 st.markdown('</div>', unsafe_allow_html=True)
 
-# --- 8. 마이크 음성 인식 처리 (무한 루프 차단 & 발음 오인식 보정) ---
+# --- 8. 마이크 음성 인식 처리 (오인식 보정 및 세션 등록) ---
 if voice_input and voice_input.strip():
     clean_voice = voice_input.strip()
 
-    # 🚨 흔히 발생하는 STT 오인식('혜민이' 등) 자동 보정
     misheard = ["혜민아", "혜민이", "테민아", "테민이", "퇴민아", "퇴민이", "해민아", "해민이"]
     for word in misheard:
         clean_voice = clean_voice.replace(word, "태민아")
 
-    # 이전에 처리했던 동일한 음성 결과가 아닐 때만 최초 1회 실행
     if clean_voice != st.session_state.last_voice_input:
         st.session_state.last_voice_input = clean_voice
         st.session_state.messages.append({"role": "user", "content": clean_voice})
         st.session_state.submitted_prompt = clean_voice
         st.session_state.input_mode = "voice"
-        # 여기서 rerun()을 호출하지 않아야 아래 9번 답변 생성으로 바로 넘어감!
 
 # --- 9. 태민이 답변 생성 ---
 if st.session_state.submitted_prompt:
@@ -214,10 +211,11 @@ if st.session_state.submitted_prompt:
     
     with st.chat_message("assistant"):
         with st.spinner("확인하고 있어..."):
-            reply = chat_with_taemin(current_prompt)
+            # 최근 대화 목록(chat_history)을 넘겨주어 단기 문맥 유지
+            reply = chat_with_taemin(current_prompt, chat_history=st.session_state.messages)
             st.markdown(reply)
             
-            # 텍스트 입력 시 무음(토큰 절약), 음성 대화 시에만 목소리 재생
+            # 텍스트 입력 시 무음(크레딧 절약), 음성 입력 시에만 TTS 발화
             audio_bytes = None
             if mode == "voice":
                 audio_bytes = services.text_to_speech(reply)
