@@ -7,5 +7,5 @@ gTTS
 edge-tts
 elevenlabs
 gspread
-google-auth
 streamlit-js-eval
+requests
