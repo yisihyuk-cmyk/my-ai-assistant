@@ -302,12 +302,47 @@ def calculate_travel_duration(start_place, end_place, travel_mode="transit"):
 
     return estimated_transit
 
-def get_departure_guidance(summary, location, event_start_dt):
+def get_address_from_coords(lat: float, lng: float) -> str:
+    """위도/경도 좌표를 카카오 역지오코딩 API를 통해 실제 지명/주소로 변환"""
+    kakao_key = os.environ.get("KAKAO_REST_API_KEY") or (st.secrets.get("KAKAO_REST_API_KEY") if hasattr(st, "secrets") else None)
+    if not kakao_key:
+        return ""
+    
+    url = f"https://dapi.kakao.com/v2/local/geo/coord2address.json?x={lng}&y={lat}"
+    headers = {"Authorization": f"KakaoAK {kakao_key}"}
+    try:
+        res = requests.get(url, headers=headers, timeout=5)
+        if res.status_code == 200:
+            docs = res.json().get("documents", [])
+            if docs:
+                road_addr = docs[0].get("road_address")
+                if road_addr:
+                    return road_addr.get("address_name", "")
+                land_addr = docs[0].get("address")
+                if land_addr:
+                    return land_addr.get("address_name", "")
+    except Exception as e:
+        print(f"역지오코딩 오류: {e}")
+    return ""
+
+def get_departure_guidance(summary, location, event_start_dt, current_coords=None):
     """일정 시작 시각과 장소를 기반으로 권장 출발 시각 및 안내 문구 생성"""
     if not location:
         return ""
 
     start_place = "안산시"
+    start_label = "안산"
+
+    # GPS 좌표가 넘어온 경우
+    if current_coords and isinstance(current_coords, (tuple, list)) and len(current_coords) == 2:
+        lat, lng = current_coords
+        real_addr = get_address_from_coords(lat, lng)
+        if real_addr:
+            start_place = real_addr
+            # 구/동 또는 시 단위 이름만 간단히 축약 (예: "제주시 노형동" 등)
+            addr_parts = real_addr.split()
+            start_label = " ".join(addr_parts[:2]) if len(addr_parts) >= 2 else real_addr
+
     # 대중교통 기준 소요 시간 계산
     duration_mins = calculate_travel_duration(start_place, location, travel_mode="transit")
     
@@ -324,8 +359,8 @@ def get_departure_guidance(summary, location, event_start_dt):
 
     return (
         f"- **[{summary}]** ({event_time_str} 시작 / 장소: {location})\n"
-        f"  * 안산에서 대중교통 이동 예상: 약 {duration_str} 소요 (도보/환승 여유 포함)\n"
-        f"  * 늦지 않으려면 최소 **{dep_time_str}**에는 집에서 출발하는 게 좋아!"
+        f"  * {start_label}에서 대중교통 이동 예상: 약 {duration_str} 소요 (도보/환승 여유 포함)\n"
+        f"  * 늦지 않으려면 최소 **{dep_time_str}**에는 출발하는 게 좋아!"
     )
     
 def delete_sheet_note(keyword: str):
