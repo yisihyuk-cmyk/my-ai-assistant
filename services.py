@@ -18,18 +18,12 @@ KAKAO_REST_API_KEY = get_secret("KAKAO_REST_API_KEY")
 SPREADSHEET_NAME = get_secret("SPREADSHEET_NAME", "태민이_아카이브")
 ELEVENLABS_API_KEY = get_secret("ELEVENLABS_API_KEY")
 ELEVENLABS_VOICE_ID = get_secret("ELEVENLABS_VOICE_ID", "gDx7aX4UOQMthJevd64d")
-CALENDAR_ID = get_secret("CALENDAR_ID", "yisihyuk@gmail.com")
+CALENDAR_ID = get_secret("CALENDAR_ID", "primary")
 
 # --- [1] 안산 실시간 날씨 조회 (Open-Meteo 무료 API) ---
-# services.py 개선 코드
-
 def get_today_weather(location_name="안산"):
-    """
-    정수의 목적지나 활동 지역 기준 실시간 날씨 조회
-    카카오 로컬 검색으로 좌표를 찾고 해당 위치 날씨를 가져옴
-    """
+    """정수의 목적지나 활동 지역 기준 실시간 날씨 조회"""
     try:
-        # 카카오 API로 해당 지역 좌표(위도/경도) 검색
         lon, lat = get_coordinates(location_name)
         if not lon or not lat:
             lat, lon = 37.3219, 126.8309
@@ -60,13 +54,8 @@ def get_today_weather(location_name="안산"):
 # --- [2] ElevenLabs TTS 음성 생성 ---
 def text_to_speech(text: str):
     """ElevenLabs API를 호출하여 텍스트를 음성(bytes)으로 변환"""
-    eleven_key = os.environ.get("ELEVENLABS_API_KEY")
-    if not eleven_key and hasattr(st, "secrets"):
-        eleven_key = st.secrets.get("ELEVENLABS_API_KEY")
-    
-    voice_id = os.environ.get("ELEVENLABS_VOICE_ID")
-    if not voice_id and hasattr(st, "secrets"):
-        voice_id = st.secrets.get("ELEVENLABS_VOICE_ID")
+    eleven_key = os.environ.get("ELEVENLABS_API_KEY") or (st.secrets.get("ELEVENLABS_API_KEY") if hasattr(st, "secrets") else None)
+    voice_id = os.environ.get("ELEVENLABS_VOICE_ID") or (st.secrets.get("ELEVENLABS_VOICE_ID") if hasattr(st, "secrets") else "gDx7aX4UOQMthJevd64d")
 
     if not eleven_key or not voice_id or not text:
         return None
@@ -77,7 +66,6 @@ def text_to_speech(text: str):
         "Content-Type": "application/json"
     }
     
-    # 🚨 text 매개변수를 그대로 넣어주기
     payload = {
         "text": text,
         "model_id": "eleven_multilingual_v2",
@@ -99,6 +87,7 @@ def text_to_speech(text: str):
     except Exception as e:
         print(f"ElevenLabs 요청 실패: {e}")
         return None
+
 # --- [3] 구글 자격증명 클라이언트 ---
 def get_gcp_credentials():
     scopes = [
@@ -111,12 +100,14 @@ def get_gcp_credentials():
         return Credentials.from_service_account_info(dict(st.secrets["gcp_service_account"]), scopes=scopes)
     elif hasattr(st, "secrets") and "GCP_SERVICE_ACCOUNT_JSON" in st.secrets:
         import json
-        return Credentials.from_service_account_info(json.loads(st.secrets["GCP_SERVICE_ACCOUNT_JSON"]), scopes=scopes)
+        raw = st.secrets["GCP_SERVICE_ACCOUNT_JSON"]
+        info = raw if isinstance(raw, dict) else json.loads(raw)
+        return Credentials.from_service_account_info(info, scopes=scopes)
     elif os.path.exists("credentials.json"):
         return Credentials.from_service_account_file("credentials.json", scopes=scopes)
     return None
 
-# --- [4] 구글 캘린더 서비스 (한국 표준시 기준 정확한 하루 조회) ---
+# --- [4] 구글 캘린더 서비스 ---
 def get_calendar_service():
     creds = get_gcp_credentials()
     if not creds:
@@ -124,29 +115,24 @@ def get_calendar_service():
     return build("calendar", "v3", credentials=creds)
 
 def fetch_today_events(target_date=None):
+    return fetch_events_by_date(target_date or datetime.now(timezone.utc).astimezone(KST))
+
+def fetch_events_by_date(target_date):
+    """특정 datetime 객체(날짜)의 하루치 일정 조회"""
     service = get_calendar_service()
     if not service:
         return []
     
     cal_id = CALENDAR_ID if CALENDAR_ID else "primary"
     
-    # 한국 시간 기준 당일 00:00:00 ~ 23:59:59 (RFC3339 규격)
-    now_kst = datetime.now(timezone.utc).astimezone(KST)
-    if target_date is None:
-        target_date = now_kst
-        
     start_dt = datetime(target_date.year, target_date.month, target_date.day, 0, 0, 0, tzinfo=KST)
     end_dt = datetime(target_date.year, target_date.month, target_date.day, 23, 59, 59, tzinfo=KST)
-    
-    # RFC3339 포맷 변환 (예: 2026-09-23T00:00:00+09:00)
-    time_min = start_dt.isoformat()
-    time_max = end_dt.isoformat()
     
     try:
         events_result = service.events().list(
             calendarId=cal_id,
-            timeMin=time_min,
-            timeMax=time_max,
+            timeMin=start_dt.isoformat(),
+            timeMax=end_dt.isoformat(),
             singleEvents=True,
             orderBy="startTime"
         ).execute()
@@ -182,7 +168,7 @@ def get_active_tasks():
     try:
         res = service.tasks().list(tasklist="@default", showCompleted=False).execute()
         return res.get("items", [])
-    except Exception as e:
+    except Exception:
         return []
 
 def complete_or_delete_task(keyword):
@@ -248,7 +234,6 @@ def save_note(category, content):
     try:
         gc = get_sheet_client()
         if not gc:
-            print("❌ 구글 서비스 계정 인증(creds) 실패")
             return False
         sh = gc.open(SPREADSHEET_NAME)
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -258,11 +243,13 @@ def save_note(category, content):
         print(f"❌ save_note 에러 발생: {e}")
         return False
 
-# --- [7] 카카오 길찾기 및 내비게이션 ---
+# --- [7] 카카오 길찾기 및 내비게이션 연동 ---
 def get_coordinates(address_or_keyword):
-    if not KAKAO_REST_API_KEY:
+    """지명/키워드를 (경도, 위도) 좌표로 변환"""
+    kakao_key = KAKAO_REST_API_KEY or os.environ.get("KAKAO_REST_API_KEY")
+    if not kakao_key:
         return None, None
-    headers = {"Authorization": f"KakaoAK {KAKAO_REST_API_KEY}"}
+    headers = {"Authorization": f"KakaoAK {kakao_key}"}
     url = "https://dapi.kakao.com/v2/local/search/keyword.json"
     try:
         res = requests.get(url, headers=headers, params={"query": address_or_keyword}, timeout=5)
@@ -270,52 +257,67 @@ def get_coordinates(address_or_keyword):
             docs = res.json().get("documents", [])
             if docs:
                 return float(docs[0]["x"]), float(docs[0]["y"])
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"좌표 검색 실패 ({address_or_keyword}): {e}")
     return None, None
 
+def call_kakao_directions(origin_coord, dest_coord):
+    """카카오 모빌리티 길찾기 REST API로 실제 자동차 소요 시간(분) 반환"""
+    kakao_key = KAKAO_REST_API_KEY or os.environ.get("KAKAO_REST_API_KEY")
+    if not kakao_key or not origin_coord or not dest_coord:
+        return None
+    
+    url = "https://apis-navi.kakaomobility.com/v1/directions"
+    headers = {"Authorization": f"KakaoAK {kakao_key}"}
+    params = {
+        "origin": f"{origin_coord[0]},{origin_coord[1]}",
+        "destination": f"{dest_coord[0]},{dest_coord[1]}",
+        "priority": "RECOMMEND"
+    }
+    try:
+        res = requests.get(url, headers=headers, params=params, timeout=7)
+        if res.status_code == 200:
+            data = res.json()
+            routes = data.get("routes", [])
+            if routes and routes[0].get("result_code") == 0:
+                duration_sec = routes[0].get("summary", {}).get("duration", 0)
+                return max(1, duration_sec // 60)
+    except Exception as e:
+        print(f"카카오 길찾기 API 오류: {e}")
+    return None
+
 def calculate_travel_duration(start_place, end_place, travel_mode="transit"):
-    """
-    출발지와 목적지 간 이동 소요 시간(분) 계산
-    - car: 카카오 모빌리티 자동차 경로 API
-    - transit: 수도권 광역 이동(안산 -> 서울 등)의 환승 및 도보 버퍼를 반영한 정밀 보정
-    """
-    # 1. 자동차 기준 소요 시간 산출
+    """출발지와 목적지 간 이동 소요 시간(분) 정밀 계산"""
     car_mins = None
     try:
-        # 기존 카카오 길찾기 API 호출 로직 (좌표 변환 -> 경로 탐색)
-        start_coord = get_location_coordinates(start_place)
-        end_coord = get_location_coordinates(end_place)
-        if start_coord and end_coord:
+        # 좌표 추출 (경도, 위도)
+        if isinstance(start_place, (tuple, list)) and len(start_place) == 2:
+            start_coord = (start_place[1], start_place[0]) if start_place[0] < 45 else (start_place[0], start_place[1])
+        else:
+            start_coord = get_coordinates(start_place)
+            
+        end_coord = get_coordinates(end_place)
+        
+        if start_coord and end_coord and start_coord[0] and end_coord[0]:
             car_mins = call_kakao_directions(start_coord, end_coord)
     except Exception as e:
-        print(f"길찾기 API 호출 오류: {e}")
+        print(f"소요 시간 계산 오류: {e}")
 
-    # 자동차 이동 모드일 경우
     if travel_mode == "car":
         return car_mins if car_mins else 60
 
-    # 2. 대중교통(transit) 이동 모드일 경우 현실적 보정
     if not car_mins:
-        # 경로 API 실패 시 안산->서울 주요 거점 기본값 (약 1시간 40분)
         return 100
 
-    # 장거리 광역 이동(자차 기준 40분 이상 걸리는 서울/경기 북부권) 판별
+    # 장거리 광역 이동 보정 공식 적용
     if car_mins >= 40:
-        # 안산 출발 특성 반영: 4호선/수인분당선 배차, 서울 진입 후 지하철 환승 1~2회, 도보 15분 이상
-        # 예: 자차 50분 -> 50 * 1.5 + 25 = 100분 (1시간 40분)
-        # 예: 자차 60분 -> 60 * 1.5 + 25 = 115분 (1시간 55분)
-        estimated_transit = int(car_mins * 1.5 + 25)
+        return int(car_mins * 1.5 + 25)
     else:
-        # 안산 시내 또는 인근(시흥/수원 등) 단거리 이동
-        # 예: 자차 20분 -> 20 * 1.3 + 15 = 41분
-        estimated_transit = int(car_mins * 1.3 + 15)
-
-    return estimated_transit
+        return int(car_mins * 1.3 + 15)
 
 def get_address_from_coords(lat: float, lng: float) -> str:
-    """위도/경도 좌표를 카카오 역지오코딩 API를 통해 실제 지명/주소로 변환"""
-    kakao_key = os.environ.get("KAKAO_REST_API_KEY") or (st.secrets.get("KAKAO_REST_API_KEY") if hasattr(st, "secrets") else None)
+    """위도/경도 좌표를 카카오 역지오코딩 API를 통해 실제 주소로 변환"""
+    kakao_key = KAKAO_REST_API_KEY or os.environ.get("KAKAO_REST_API_KEY")
     if not kakao_key:
         return ""
     
@@ -344,20 +346,16 @@ def get_departure_guidance(summary, location, event_start_dt, current_coords=Non
     start_place = "안산시"
     start_label = "안산"
 
-    # GPS 좌표가 넘어온 경우
     if current_coords and isinstance(current_coords, (tuple, list)) and len(current_coords) == 2:
         lat, lng = current_coords
         real_addr = get_address_from_coords(lat, lng)
         if real_addr:
             start_place = real_addr
-            # 구/동 또는 시 단위 이름만 간단히 축약 (예: "제주시 노형동" 등)
             addr_parts = real_addr.split()
             start_label = " ".join(addr_parts[:2]) if len(addr_parts) >= 2 else real_addr
 
-    # 대중교통 기준 소요 시간 계산
     duration_mins = calculate_travel_duration(start_place, location, travel_mode="transit")
     
-    # 약속 장소 도착 후 입장/자리 찾기 여유 버퍼(15분) 추가
     total_buffer_mins = duration_mins + 15
     departure_dt = event_start_dt - timedelta(minutes=total_buffer_mins)
 
@@ -373,9 +371,9 @@ def get_departure_guidance(summary, location, event_start_dt, current_coords=Non
         f"  * {start_label}에서 대중교통 이동 예상: 약 {duration_str} 소요 (도보/환승 여유 포함)\n"
         f"  * 늦지 않으려면 최소 **{dep_time_str}**에는 출발하는 게 좋아!"
     )
-    
+
 def delete_sheet_note(keyword: str):
-    """구글 시트(아카이브)에서 특정 키워드가 포함된 메모 행을 찾아 삭제 (다중 일치 항목도 처리)"""
+    """구글 시트(아카이브)에서 특정 키워드가 포함된 메모 행을 찾아 삭제"""
     try:
         gc = get_sheet_client()
         if not gc:
@@ -387,26 +385,21 @@ def delete_sheet_note(keyword: str):
         if not all_values or len(all_values) <= 1:
             return False, "삭제할 메모가 없어."
         
-        # 키워드 정리 (공백 제거하여 검색 적중률 향상)
         clean_kw = keyword.replace(" ", "").strip()
         if not clean_kw:
             return False, "삭제할 키워드가 명확하지 않아."
 
-        # 역순으로 일치하는 행 번호 수집 (구글 시트는 1-indexed)
         rows_to_delete = []
         for idx in range(len(all_values) - 1, 0, -1):
             row = all_values[idx]
-            # row 전체 텍스트 합치기 (공백 제거)
             row_text = "".join(row).replace(" ", "")
             if clean_kw in row_text:
                 rows_to_delete.append(idx + 1)
         
         if rows_to_delete:
-            # 아래 행부터 차례대로 삭제해야 위의 행 번호가 흐트러지지 않음
             for r_idx in rows_to_delete:
                 worksheet.delete_rows(r_idx)
             
-            # 캐시 비우기
             if hasattr(st, "cache_data"):
                 st.cache_data.clear()
             return True, f"'{keyword}' 관련 메모 {len(rows_to_delete)}건을 시트에서 깔끔하게 삭제했어!"
@@ -415,34 +408,7 @@ def delete_sheet_note(keyword: str):
     except Exception as e:
         return False, f"메모 삭제 중 오류 발생: {e}"
 
-import gspread  # 파일 맨 상단에 반드시 포함되어 있어야 해!
-
-# --- 특정 날짜 일정 조회 함수 추가 ---
-def fetch_events_by_date(target_date):
-    """특정 datetime 객체(날짜)의 하루치 일정 조회"""
-    service = get_calendar_service()
-    if not service:
-        return []
-    
-    cal_id = CALENDAR_ID if CALENDAR_ID else "primary"
-    
-    start_dt = datetime(target_date.year, target_date.month, target_date.day, 0, 0, 0, tzinfo=KST)
-    end_dt = datetime(target_date.year, target_date.month, target_date.day, 23, 59, 59, tzinfo=KST)
-    
-    try:
-        events_result = service.events().list(
-            calendarId=cal_id,
-            timeMin=start_dt.isoformat(),
-            timeMax=end_dt.isoformat(),
-            singleEvents=True,
-            orderBy="startTime"
-        ).execute()
-        return events_result.get("items", [])
-    except Exception as e:
-        print(f"❌ Calendar API 특정일 조회 오류 ({cal_id}): {e}")
-        return []
-
-# --- 구글 시트 장기 대화 기억 ---
+# --- [8] 구글 시트 장기 대화 기억 ---
 def get_or_create_memory_worksheet():
     gc = get_sheet_client()
     if not gc:
