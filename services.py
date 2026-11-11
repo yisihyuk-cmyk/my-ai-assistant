@@ -68,11 +68,13 @@ def text_to_speech(text):
         "Content-Type": "application/json"
     }
     payload = {
-        "text": text,
-        "model_id": "eleven_multilingual_v2",
+        "text": tts_text,
+        "model_id": "eleven_multilingual_v2",  # 다국어 v2 모델 필수
         "voice_settings": {
-            "stability": 0.5,
-            "similarity_boost": 0.75
+            "stability": 0.3,          # 🚨 핵심 1: 안정성을 0.3 이하로 낮춤
+            "similarity_boost": 0.75,  # 원본 목소리 싱크로율
+            "style": 0.35,             # 🚨 핵심 2: 감정/스타일 과장도 추가 (0.2~0.5 추천)
+            "use_speaker_boost": True
         }
     }
     try:
