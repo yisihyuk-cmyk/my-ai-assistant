@@ -189,9 +189,15 @@ with col_mic:
 
 st.markdown('</div>', unsafe_allow_html=True)
 
-# --- 8. 마이크 음성 인식 처리 (무한 루프 차단) ---
+# --- 8. 마이크 음성 인식 처리 (무한 루프 차단 & 발음 오인식 보정) ---
 if voice_input and voice_input.strip():
     clean_voice = voice_input.strip()
+
+    # 🚨 흔히 발생하는 STT 오인식('혜민이' 등) 자동 보정
+    misheard = ["혜민아", "혜민이", "테민아", "테민이", "퇴민아", "퇴민이", "해민아", "해민이"]
+    for word in misheard:
+        clean_voice = clean_voice.replace(word, "태민아")
+
     # 이전에 처리했던 동일한 음성 결과가 아닐 때만 최초 1회 실행
     if clean_voice != st.session_state.last_voice_input:
         st.session_state.last_voice_input = clean_voice
