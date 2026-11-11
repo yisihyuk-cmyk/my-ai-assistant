@@ -54,20 +54,6 @@ div[data-testid="stTextInput"] input {
 # --- 3. 세션 상태 초기화 ---
 if "messages" not in st.session_state:
     st.session_state.messages = []
-    # 구글 시트에 저장된 최근 대화 불러와서 화면에 복원 (최근 3턴)
-    try:
-        ws = services.get_or_create_memory_worksheet()
-        if ws:
-            rows = ws.get_all_values()[1:][-6:]  # 최근 3번의 대화(6행)
-            for r in rows:
-                if len(r) >= 3:
-                    role = "user" if r[1] == "정수" else "assistant"
-                    st.session_state.messages.append({
-                        "role": role,
-                        "content": r[2]
-                    })
-    except Exception:
-        pass
 
 if "submitted_prompt" not in st.session_state:
     st.session_state.submitted_prompt = ""
