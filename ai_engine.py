@@ -441,15 +441,30 @@ def chat_with_taemin(user_message, chat_history=None):
         weekday_str = weekdays[now_dt.weekday()]
         current_time_str = now_dt.strftime(f"%Y년 %m월 %d일 {weekday_str} %H시 %M분")
 
+        # 1) 구글 시트에서 장기 대화 기억 로드
+        long_term_memory = services.get_recent_chat_memory(limit_turns=5)
+        memory_section = f"\n[구글 시트에 기록된 이전 대화 기억]\n{long_term_memory}\n" if long_term_memory else ""
+
         prompt = (
             f"[현재 한국 표준시 기준 정보]\n"
             f"- 현재 날짜 및 시각: {current_time_str}\n"
             f"- 정수의 기본 위치: 경기도 안산\n\n"
-            f"정수의 질문: {msg_clean}{context_addon}\n\n"
+            f"{memory_section}"
+            f"정수의 현재 질문: {msg_clean}{context_addon}\n\n"
             f"[답변 지침]\n"
             f"1. 날짜, 시간, 일정과 관련된 이야기를 할 때는 반드시 위의 기준 정보({current_time_str})를 절대적 기준으로 삼을 것.\n"
-            f"2. 번호 매기기 형식 없이, 다정하고 친근한 친구 같은 반말로 답변해줘."
+            f"2. 만약 [이전 대화 기억]에 언급된 내용과 관련된 질문이라면, 그때 나눈 이야기 맥락을 기억하고 다정하게 이어받아 답변할 것.\n"
+            f"3. 번호 매기기 형식 없이, 다정하고 친근한 친구 같은 반말로 답변해줘."
         )
-        return call_gemini_rest(prompt)
+        
+        reply = call_gemini_rest(prompt)
+
+        # 2) 이번 대화를 구글 시트에 영구 저장
+        try:
+            services.save_chat_turn(msg_clean, reply)
+        except Exception:
+            pass
+
+        return reply
     except Exception as e:
         return f"정수야, 내가 답변하려다 잠깐 오류가 생겼어: {e}"
