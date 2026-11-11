@@ -49,7 +49,7 @@ def call_gemini_rest(prompt_text):
         "generationConfig": {
             "temperature": 0.9,
             "topP": 0.95,
-            "maxOutputTokens": 1000,
+            "maxOutputTokens": 2048,
             "thinkingConfig": {"thinkingBudget": 0}
         }
     }
