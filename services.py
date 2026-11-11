@@ -58,36 +58,47 @@ def get_today_weather(location_name="안산"):
     return f"오늘 [{location_name}] 일교차에 유의하고 옷 따뜻하게 챙겨 입어!"
 
 # --- [2] ElevenLabs TTS 음성 생성 ---
-def text_to_speech(text):
-    """ElevenLabs API를 이용해 태민이 목소리 오디오(bytes) 생성"""
-    if not ELEVENLABS_API_KEY or not ELEVENLABS_VOICE_ID:
+def text_to_speech(text: str):
+    """ElevenLabs API를 호출하여 텍스트를 음성(bytes)으로 변환"""
+    eleven_key = os.environ.get("ELEVENLABS_API_KEY")
+    if not eleven_key and hasattr(st, "secrets"):
+        eleven_key = st.secrets.get("ELEVENLABS_API_KEY")
+    
+    voice_id = os.environ.get("ELEVENLABS_VOICE_ID")
+    if not voice_id and hasattr(st, "secrets"):
+        voice_id = st.secrets.get("ELEVENLABS_VOICE_ID")
+
+    if not eleven_key or not voice_id or not text:
         return None
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}"
+
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
     headers = {
-        "xi-api-key": ELEVENLABS_API_KEY,
+        "xi-api-key": eleven_key,
         "Content-Type": "application/json"
     }
+    
+    # 🚨 text 매개변수를 그대로 넣어주기
     payload = {
-        "text": tts_text,
-        "model_id": "eleven_multilingual_v2",  # 다국어 v2 모델 필수
+        "text": text,
+        "model_id": "eleven_multilingual_v2",
         "voice_settings": {
-            "stability": 0.3,          # 🚨 핵심 1: 안정성을 0.3 이하로 낮춤
-            "similarity_boost": 0.75,  # 원본 목소리 싱크로율
-            "style": 0.35,             # 🚨 핵심 2: 감정/스타일 과장도 추가 (0.2~0.5 추천)
+            "stability": 0.3,
+            "similarity_boost": 0.75,
+            "style": 0.35,
             "use_speaker_boost": True
         }
     }
+
     try:
-        res = requests.post(url, headers=headers, json=payload, timeout=20)
-        if res.status_code == 200:
-            return res.content
+        response = requests.post(url, json=payload, headers=headers, timeout=15)
+        if response.status_code == 200:
+            return response.content
         else:
-            print(f"ElevenLabs TTS 오류: {res.status_code} - {res.text}")
+            print(f"ElevenLabs TTS 에러: {response.status_code} - {response.text}")
             return None
     except Exception as e:
-        print(f"ElevenLabs 호출 실패: {e}")
+        print(f"ElevenLabs 요청 실패: {e}")
         return None
-
 # --- [3] 구글 자격증명 클라이언트 ---
 def get_gcp_credentials():
     scopes = [
