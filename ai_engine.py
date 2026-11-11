@@ -307,8 +307,9 @@ def generate_evening_briefing():
 
 def chat_with_taemin(user_message, chat_history=None):
     msg_clean = user_message.strip()
+    reply = ""
 
-    # 0. 날짜 및 시간 질문 즉시 직접 답변 (환각 원천 차단)
+    # 0. 날짜 및 시간 질문 즉시 직접 답변
     date_keywords = [
         "오늘 날짜", "몇 월 며칠", "몇월 며칠", "몇월 몇일", "몇 월 몇 일",
         "무슨 요일", "오늘 며칠", "오늘 몇일", "지금 몇 시", "지금 몇시", "현재 시간", "현재 시각"
@@ -319,18 +320,20 @@ def chat_with_taemin(user_message, chat_history=None):
         now_kst = datetime.now(timezone.utc).astimezone(kst)
         weekdays = ["월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일"]
         weekday_str = weekdays[now_kst.weekday()]
-        
         date_str = now_kst.strftime(f"%Y년 %m월 %d일 {weekday_str}")
         time_str = now_kst.strftime("%H시 %M분")
         
-        if "몇 시" in msg_clean or "몇시" in msg_clean or "시간" in msg_clean or "시각" in msg_clean:
-            return f"정수야, 지금 시각은 **{date_str} {time_str}**이야!"
-        return f"정수야, 오늘은 **{date_str}**이야! 오늘도 좋은 하루 보내자."
+        if any(w in msg_clean for w in ["몇 시", "몇시", "시간", "시각"]):
+            reply = f"정수야, 지금 시각은 **{date_str} {time_str}**이야!"
+        else:
+            reply = f"정수야, 오늘은 **{date_str}**이야! 오늘도 좋은 하루 보내자."
+        
+        services.save_chat_turn(msg_clean, reply)
+        return reply
 
-    # 1. 완료/삭제 처리 (구글 시트 메모 + Tasks 할 일 동시 처리)
+    # 1. 완료/삭제 처리
     finish_keywords = ["삭제해줘", "지워줘", "삭제", "완료했어", "끝냈어", "마무리했어", "다 했어", "지워"]
     if any(k in msg_clean for k in finish_keywords):
-        # 삭제 명령 및 조사, 문맥어 제거
         target_kw = msg_clean
         stopwords = [
             "메모에서", "메모에", "메모", "일정에서", "일정에", "일정", "할 일에서", "할 일에", "할일",
@@ -340,25 +343,22 @@ def chat_with_taemin(user_message, chat_history=None):
         ]
         for sw in stopwords:
             target_kw = target_kw.replace(sw, "")
-        
         target_kw = re.sub(r"[은는이가을를\.,\?!]", " ", target_kw).strip()
         words = [w for w in target_kw.split() if len(w) >= 1]
-        
-        # 날짜 표현(예: "10월 2일")이 분리되지 않도록 공백으로 묶거나 첫 덩어리 추출
         search_kw = " ".join(words) if words else target_kw
 
-        # 1) 구글 시트 메모에서 삭제 시도
-        sheet_success, sheet_msg = services.delete_sheet_note(search_kw)
-        
-        # 2) 구글 Tasks에서도 삭제/완료 시도
-        task_success, task_msg = services.complete_or_delete_task(search_kw)
+        sheet_success, _ = services.delete_sheet_note(search_kw)
+        task_success, _ = services.complete_or_delete_task(search_kw)
 
         if sheet_success or task_success:
-            return f"🗑️ **[삭제 완료!]** 정수야, 요청한 대로 **'{search_kw}'** 관련 메모를 깔끔하게 지웠어! 이제 서재 목록에서도 안 보일 거야."
+            reply = f"🗑️ **[삭제 완료!]** 정수야, 요청한 대로 **'{search_kw}'** 관련 메모를 깔끔하게 지웠어!"
         else:
-            return f"💬 정수야, '{search_kw}' 관련 메모를 찾아서 지우려고 했는데 이미 지워졌거나 찾지 못했어."
+            reply = f"💬 정수야, '{search_kw}' 관련 메모를 찾아서 지우려고 했는데 이미 지워졌거나 찾지 못했어."
+        
+        services.save_chat_turn(msg_clean, reply)
+        return reply
 
-    # 2. 할 일 & 메모 저장 (구글 시트 + 구글 Tasks)
+    # 2. 할 일 & 메모 저장
     memo_keywords = ["기억해줘", "메모해줘", "적어둬", "남겨줘", "해야 돼", "해야 해", "할 일", "챙겨줘"]
     if any(k in msg_clean for k in memo_keywords):
         clean_content = msg_clean
@@ -367,9 +367,6 @@ def chat_with_taemin(user_message, chat_history=None):
         
         try:
             gc = services.get_sheet_client()
-            if not gc:
-                return "❌ 오류: 구글 서비스 계정 인증(creds) 객체를 생성하지 못했어."
-            
             sh = gc.open(services.SPREADSHEET_NAME)
             now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             sh.sheet1.append_row([now_str, "메모", clean_content or msg_clean])
@@ -379,8 +376,7 @@ def chat_with_taemin(user_message, chat_history=None):
             error_detail = str(sheet_err)
         
         try:
-            due_time = datetime.utcnow() + timedelta(hours=12)
-            services.add_work_task(title=msg_clean, due_datetime=due_time)
+            services.add_work_task(title=msg_clean, due_datetime=datetime.utcnow() + timedelta(hours=12))
         except Exception:
             pass
 
@@ -388,49 +384,78 @@ def chat_with_taemin(user_message, chat_history=None):
             st.cache_data.clear()
 
         if sheet_success:
-            return (
-                f"📝 **[메모 및 할 일 저장 완료!]**\n\n"
-                f"정수야, 잊지 않게 서재 아카이브에 잘 적어뒀어: **'{clean_content or msg_clean}'**\n"
-                f"브리핑할 때도 꼼꼼하게 챙겨서 알려줄게!"
-            )
+            reply = f"📝 **[메모 저장 완료!]** 정수야, 잘 적어뒀어: **'{clean_content or msg_clean}'**"
         else:
-            return f"❌ 구글 시트 저장 실패 상세 원인:\n\n`{error_detail}`"
+            reply = f"❌ 구글 시트 저장 실패: `{error_detail}`"
+        
+        services.save_chat_turn(msg_clean, reply)
+        return reply
 
-    # 3. 일정/이동 경로 안내
-    context_addon = ""
-    route_keywords = ["출발", "몇 시에", "어떻게 가", "얼마나 걸려", "이동", "가는 길", "길안내", "위치"]
-    if any(k in msg_clean for k in route_keywords):
-        try:
-            target_date = datetime.now()
-            date_label = "오늘"
-            if "내일" in msg_clean:
-                target_date = datetime.now() + timedelta(days=1)
-                date_label = "내일"
-            elif "모레" in msg_clean:
-                target_date = datetime.now() + timedelta(days=2)
-                date_label = "모레"
+    # 3. 일정/이동 경로 및 일반 대화
+    try:
+        from datetime import timezone
+        kst = timezone(timedelta(hours=9))
+        now_dt = datetime.now(timezone.utc).astimezone(kst)
+        weekdays = ["월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일"]
+        weekday_str = weekdays[now_dt.weekday()]
+        current_time_str = now_dt.strftime(f"%Y년 %m월 %d일 {weekday_str} %H시 %M분")
 
-            if hasattr(services, "fetch_events_by_date"):
-                events = services.fetch_events_by_date(target_date)
-            else:
-                events = services.fetch_today_events()
+        # 대상 날짜 파싱 (오늘, 내일, 특정 날짜)
+        target_date = now_dt
+        date_label = "오늘"
+        if "내일" in msg_clean:
+            target_date = now_dt + timedelta(days=1)
+            date_label = "내일"
+        elif "모레" in msg_clean:
+            target_date = now_dt + timedelta(days=2)
+            date_label = "모레"
+        else:
+            # "10월 3일", "10/3" 등 정규식 매칭
+            m = re.search(r"(\d{1,2})월\s*(\d{1,2})일", msg_clean)
+            if m:
+                month, day = int(m.group(1)), int(m.group(2))
+                target_date = datetime(now_dt.year, month, day, tzinfo=kst)
+                date_label = f"{month}월 {day}일"
 
-            travel_guidance_list = []
+        # 캘린더 일정 조회
+        events = services.fetch_events_by_date(target_date)
+        events_text = ""
+        if events:
+            ev_list = []
             for ev in events:
-                summary = ev.get("summary", "")
-                location = ev.get("location", "")
-                start_raw = ev.get("start", {}).get("dateTime", "")
-                
-                if location and "T" in start_raw:
-                    dt = datetime.fromisoformat(start_raw.split("+")[0])
-                    guidance = services.get_departure_guidance(summary, location, dt)
-                    if guidance:
-                        travel_guidance_list.append(guidance)
-            
-            if travel_guidance_list:
-                context_addon = f"\n\n[{date_label} 캘린더 등록 일정 이동 경로 참고자료]\n" + "\n".join(travel_guidance_list)
-        except Exception as e:
-            print(f"❌ 이동 경로 안내 생성 실패: {e}")
+                s = ev.get("summary", "일정")
+                st_time = ev.get("start", {}).get("dateTime", ev.get("start", {}).get("date", ""))
+                loc = ev.get("location", "")
+                time_disp = st_time.split("T")[1][:5] if "T" in st_time else "종일"
+                loc_disp = f" (장소: {loc})" if loc else ""
+                ev_list.append(f"- {s} [{time_disp}{loc_disp}]")
+            events_text = f"\n[{date_label} 캘린더 등록 일정]\n" + "\n".join(ev_list) + "\n"
+        else:
+            events_text = f"\n[{date_label} 캘린더 등록 일정: 없음]\n"
+
+        # 장기 대화 기억 로드
+        long_term_memory = services.get_recent_chat_memory(limit_turns=5)
+        memory_section = f"\n[구글 시트 이전 대화 기억]\n{long_term_memory}\n" if long_term_memory else ""
+
+        prompt = (
+            f"[현재 한국 표준시 기준 정보]\n"
+            f"- 현재 날짜 및 시각: {current_time_str}\n"
+            f"- 정수의 기본 위치: 경기도 안산\n\n"
+            f"{memory_section}"
+            f"{events_text}\n"
+            f"정수의 질문: {msg_clean}\n\n"
+            f"[답변 지침]\n"
+            f"1. 일정 질문을 받으면 위의 [{date_label} 캘린더 등록 일정]을 바탕으로 명확하게 답변할 것. 일정이 없으면 없다고 다정하게 알려줘.\n"
+            f"2. 만약 [이전 대화 기억]과 관련된 질문이면 그 맥락을 이어받을 것.\n"
+            f"3. 번호 매기기 없이 다정하고 편안한 친구 반말로 답해줘."
+        )
+        reply = call_gemini_rest(prompt)
+    except Exception as e:
+        reply = f"정수야, 답변 준비 중 오류가 생겼어: {e}"
+
+    # 모든 대화를 구글 시트에 영구 기록
+    services.save_chat_turn(msg_clean, reply)
+    return reply
 
     # 4. 일반 대화 및 길찾기 안내 답변
     try:
