@@ -105,18 +105,24 @@ with st.sidebar:
     
     # 브라우저에 위치 권한 요청
     loc = get_geolocation()
-    
+
     if loc and "coords" in loc:
         user_lat = loc["coords"]["latitude"]
         user_lng = loc["coords"]["longitude"]
         st.session_state["user_coords"] = (user_lat, user_lng)
-        
+
         # 주소 변환해서 살짝 띄워주기
-        current_loc_name = services.get_address_from_coords(user_lat, user_lng)
+        current_loc_name = ""
+        if hasattr(services, "get_address_from_coords"):
+            try:
+                current_loc_name = services.get_address_from_coords(user_lat, user_lng)
+            except Exception:
+                current_loc_name = ""
+
         if current_loc_name:
             st.success(f"현재 위치: {current_loc_name}", icon="🧭")
         else:
-            st.caption(f"좌표 감지됨 ({user_lat:.3f}, {user_lng:.3f})")
+            st.caption(f"📍 GPS 좌표 감지됨 ({user_lat:.3f}, {user_lng:.3f})")
     else:
         # 권한 거부 또는 브라우저 로딩 중 기본값(안산)
         st.session_state["user_coords"] = None
