@@ -3,6 +3,7 @@ from datetime import datetime
 from streamlit_mic_recorder import speech_to_text  # <-- 이 줄 추가
 import services
 from ai_engine import generate_daily_briefing, generate_evening_briefing, chat_with_taemin
+from streamlit_js_eval import get_geolocation
 
 # --- 1. 기본 페이지 설정 ---
 st.set_page_config(
@@ -96,6 +97,30 @@ with st.sidebar:
                 st.write(content)
     else:
         st.caption("기록된 메모가 없거나 시트 연결을 확인 중이야.")
+
+# 사이드바 하단 또는 상단에 GPS 위치 감지 블록 추가
+with st.sidebar:
+    st.markdown("---")
+    st.markdown("📍 **실시간 위치 (GPS)**")
+    
+    # 브라우저에 위치 권한 요청
+    loc = get_geolocation()
+    
+    if loc and "coords" in loc:
+        user_lat = loc["coords"]["latitude"]
+        user_lng = loc["coords"]["longitude"]
+        st.session_state["user_coords"] = (user_lat, user_lng)
+        
+        # 주소 변환해서 살짝 띄워주기
+        current_loc_name = services.get_address_from_coords(user_lat, user_lng)
+        if current_loc_name:
+            st.success(f"현재 위치: {current_loc_name}", icon="🧭")
+        else:
+            st.caption(f"좌표 감지됨 ({user_lat:.3f}, {user_lng:.3f})")
+    else:
+        # 권한 거부 또는 브라우저 로딩 중 기본값(안산)
+        st.session_state["user_coords"] = None
+        st.caption("안산(기본 출발지) 기준으로 작동 중이야. 여행지에서 정확한 길안내를 받으려면 브라우저 위치 권한을 허용해줘!")
 
 # --- 5. 본문 상단 헤더 & 브리핑 버튼 ---
 st.title("✨ 안녕, 태민이야!")
