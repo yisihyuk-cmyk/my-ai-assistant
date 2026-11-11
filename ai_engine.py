@@ -43,7 +43,6 @@ def get_next_api_key():
 
 def call_gemini_rest(prompt_text):
     keys = get_api_keys_pool()
-    # 어휘 다양성을 높이기 위해 temperature를 0.9, topP를 0.95로 상향
     payload = {
         "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
         "contents": [{"parts": [{"text": prompt_text}]}],
@@ -182,7 +181,6 @@ def generate_daily_briefing():
                 try:
                     clean_time = start_raw.split("+")[0]
                     dt = datetime.fromisoformat(clean_time)
-                    # 세션에 저장된 실시간 GPS 좌표 전달 지원
                     user_coords = st.session_state.get("user_coords") if hasattr(st, "session_state") else None
                     guidance = services.get_departure_guidance(summary, location, dt, current_coords=user_coords)
                     if guidance:
@@ -217,7 +215,15 @@ def generate_daily_briefing():
 4. 할 일 & 메모: 할 일({tasks_text})과 챙겨볼 메모({notes_text}) 가볍게 짚어주기
 5. 기분 좋은 하루 응원으로 마무리하기
 """
-        return call_gemini_rest(user_content)
+        reply = call_gemini_rest(user_content)
+
+        # 🚨 아침 브리핑 내용도 구글 시트 대화기억 탭에 저장
+        try:
+            services.save_chat_turn("[시스템] 아침 브리핑 실행", reply)
+        except Exception:
+            pass
+
+        return reply
     except Exception as e:
         return f"정수야, 좋은 아침! 아침 브리핑 생성 중 잠깐 오류가 생겼어. (상세 원인: {e}, 로그: {debug_logs})"
 
@@ -280,7 +286,15 @@ def generate_evening_briefing():
 - 남은 할 일 & 메모 점검: 할 일({tasks_text})과 오늘/최근 메모({notes_text})를 가볍게 짚어주며 잘 챙겼는지 확인하기
 - 편안한 밤 보내라는 따뜻한 인사로 마무리하기
 """
-        return call_gemini_rest(user_content)
+        reply = call_gemini_rest(user_content)
+
+        # 🚨 저녁 브리핑 내용도 구글 시트 대화기억 탭에 저장
+        try:
+            services.save_chat_turn("[시스템] 저녁 브리핑 실행", reply)
+        except Exception:
+            pass
+
+        return reply
     except Exception as e:
         return f"정수야, 오늘 하루도 정말 수고 많았어! 편안한 저녁 보내. (오류: {e})"
 
@@ -420,11 +434,23 @@ def chat_with_taemin(user_message, chat_history=None):
             else:
                 events_text = f"\n[{date_label} 캘린더 등록 일정: 없음]\n"
 
-        # 장기 대화 기억 로드
+        # 장기 대화 기억 로드 (구글 시트)
         long_term_memory = ""
         if hasattr(services, "get_recent_chat_memory"):
             long_term_memory = services.get_recent_chat_memory(limit_turns=5)
-        memory_section = f"\n[구글 시트 이전 대화 기억]\n{long_term_memory}\n" if long_term_memory else ""
+        memory_section = f"\n[구글 시트 이전 대화 기억(브리핑 및 이전 대화 포함)]\n{long_term_memory}\n" if long_term_memory else ""
+
+        # 단기 세션 대화 기억 로드 (app.py에서 전달받은 현재 화면 대화)
+        recent_session_text = ""
+        if chat_history and isinstance(chat_history, list) and len(chat_history) > 0:
+            session_lines = []
+            for m_item in chat_history[-4:]:
+                sender = "정수" if m_item.get("role") == "user" else "태민이"
+                c_text = m_item.get("content", "")
+                if c_text:
+                    session_lines.append(f"{sender}: {c_text}")
+            if session_lines:
+                recent_session_text = f"\n[현재 화면 직전 대화 흐름]\n" + "\n".join(session_lines) + "\n"
 
         # 실시간 GPS 기반 위치 안내
         current_loc_str = "경기도 안산"
@@ -440,11 +466,12 @@ def chat_with_taemin(user_message, chat_history=None):
             f"- 현재 날짜 및 시각: {current_time_str}\n"
             f"- 정수의 현재 위치: {current_loc_str}\n\n"
             f"{memory_section}"
+            f"{recent_session_text}"
             f"{events_text}\n"
-            f"정수의 질문: {msg_clean}\n\n"
+            f"정수의 현재 질문: {msg_clean}\n\n"
             f"[답변 지침]\n"
-            f"1. 일정 질문을 받으면 [{date_label} 캘린더 등록 일정]을 기준으로 답변할 것. 일정이 없으면 없다고 편하게 말해줘.\n"
-            f"2. [이전 대화 기억]과 연결된 이야기라면 그 맥락을 잊지 않고 자연스럽게 이어받아 대답할 것.\n"
+            f"1. 일정 관련 질문은 [{date_label} 캘린더 등록 일정]을 기준으로 답변할 것. 일정이 없으면 없다고 편하게 말해줘.\n"
+            f"2. [이전 대화 기억]이나 [현재 화면 직전 대화 흐름]에 아침/저녁 브리핑이나 이전 대화 내용이 있다면, 그 맥락을 잊지 않고 자연스럽게 이어받아 대답할 것.\n"
             f"3. 뻔하고 기계적인 인사말(예: '좋은 하루 보내!', '힘내자!')은 피하고, 정수와 허물없는 친구처럼 위트 있고 생생한 반말로 표현할 것.\n"
             f"4. 번호 매기기 형식 없이 자연스러운 문단 대화체로 답변해줘."
         )
