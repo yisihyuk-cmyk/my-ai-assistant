@@ -1,22 +1,17 @@
 import os
 import re
 import requests
-from datetime import datetime, timedelta
+import time
+from datetime import datetime, timedelta, timezone
 import streamlit as st
 import services
-import time
-
-CANDIDATE_MODELS = [
-    "gemini-2.5-flash-lite",
-    "gemini-2.5-flash",
-    "gemini-1.5-flash"
-]
 
 SYSTEM_PROMPT = """
 너는 나의 가장 가깝고 다정한 단짝 친구이자 1인 전담 AI 비서 '태민이'야.
-사용자의 이름은 '정수'이며, 언제나 다정하게 "정수야"라고 편하게 이름을 불러줘.
-절대 존댓말을 쓰지 않고, 자연스럽고 포근한 친구 반말(~했어, ~할게, ~해, ~보내자 등)을 써.
-말을 건넬 때 '1.', '2.', '3.' 같은 번호나 리스트 항목을 매기지 말고, 친구와 편하게 이야기하듯 매끄러운 줄글과 대화체로 전해줘.
+사용자의 이름은 '정수'이며, 언제나 다정하게 이름을 편하게 불러줘.
+절대 존댓말을 쓰지 않고, 자연스럽고 생생한 친구 반말(~했어, ~할게, ~해, ~보내자 등)을 써.
+'1.', '2.', '3.' 같은 번호나 리스트 항목을 매기지 말고, 친구와 편하게 이야기하듯 매끄러운 줄글과 대화체로 전해줘.
+상투적인 인사말이나 똑같은 단어를 기계처럼 반복하지 말고, 상황에 맞게 위트 있고 다채로운 어휘를 사용해줘.
 """
 
 def get_api_keys_pool():
@@ -48,21 +43,20 @@ def get_next_api_key():
 
 def call_gemini_rest(prompt_text):
     keys = get_api_keys_pool()
+    # 어휘 다양성을 높이기 위해 temperature를 0.9, topP를 0.95로 상향
     payload = {
         "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
         "contents": [{"parts": [{"text": prompt_text}]}],
         "generationConfig": {
-            "temperature": 0.7,
+            "temperature": 0.9,
+            "topP": 0.95,
             "maxOutputTokens": 1000,
             "thinkingConfig": {"thinkingBudget": 0}
         }
     }
     last_error = None
+    models = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
     
-    # 안정적인 구글 공식 모델 목록
-    models = ["gemini-3.5-flash-lite", "gemini-3.5-flash"]
-    
-    # 등록된 키 개수만큼 순회하며 탐색
     for _ in range(max(1, len(keys))):
         api_key = get_next_api_key()
         headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
@@ -72,7 +66,6 @@ def call_gemini_rest(prompt_text):
             try:
                 res = requests.post(url, headers=headers, json=payload, timeout=20)
                 
-                # 성공 시 AI가 생성한 진짜 답변 반환
                 if res.status_code == 200:
                     data = res.json()
                     candidates = data.get("candidates", [])
@@ -82,7 +75,6 @@ def call_gemini_rest(prompt_text):
                             return parts[0].get("text", "")
                     return "정수야, 답변 내용을 구성하지 못했어."
                 
-                # 429 할당량 초과 시 다음 키로 교체
                 elif res.status_code == 429:
                     last_error = "429 할당량 초과"
                     time.sleep(0.5)
@@ -100,19 +92,16 @@ def call_gemini_rest(prompt_text):
                 last_error = str(e)
                 continue
 
-    # 모든 키와 모델이 실패했을 때 (홍대 고정 문구 대신 진짜 에러 상황 안내)
     return f"정수야, AI 연결이 일시적으로 원활하지 않아서 답변을 불러오지 못했어. (원인: {last_error})"
 
 def generate_daily_briefing():
     debug_logs = []
     try:
-        # 1. 만료 태스크 정리
         try:
             services.clean_expired_tasks(hours_limit=24)
         except Exception as te:
             debug_logs.append(f"태스크정리오류: {te}")
         
-        # 2. 캘린더 일정 조회
         try:
             events = services.fetch_today_events()
             debug_logs.append(f"캘린더일정수: {len(events)}개")
@@ -120,13 +109,11 @@ def generate_daily_briefing():
             events = []
             debug_logs.append(f"캘린더오류: {ce}")
             
-        # 3. 할 일 조회
         try:
             active_tasks = services.get_active_tasks()
         except Exception:
             active_tasks = []
         
-        # 4. 메모 조회
         recent_notes = services.get_all_notes(limit=5)
         notes_lines = []
         today_date = datetime.now().date()
@@ -151,9 +138,9 @@ def generate_daily_briefing():
                     days_diff = (today_date - memo_date).days
                     if days_diff == 1:
                         adjusted_cnt = adjusted_cnt.replace("내일", "오늘")
-                        prefix = f"(어제 작성)"
+                        prefix = "(어제 작성)"
                     elif days_diff == 0:
-                        prefix = f"(오늘 작성)"
+                        prefix = "(오늘 작성)"
                     else:
                         prefix = f"({created_at_str[:10]} 작성)"
                 else:
@@ -163,7 +150,6 @@ def generate_daily_briefing():
                     notes_lines.append(f"- [{cat}] {prefix} {adjusted_cnt}")
         notes_text = "\n".join(notes_lines) if notes_lines else "오늘 특별히 남겨둔 메모는 없어."
 
-        # 5. 날씨 조회 (안산 기본)
         target_location = "안산"
         for ev in events:
             loc = ev.get("location", "").strip()
@@ -176,7 +162,6 @@ def generate_daily_briefing():
         except Exception as we:
             weather_info = f"날씨 정보를 일시적으로 확인하지 못했어 ({we}). 일교차 조심해!"
 
-        # 6. 일정 요약
         events_summary = []
         travel_guidance_list = []
         for ev in events:
@@ -197,7 +182,9 @@ def generate_daily_briefing():
                 try:
                     clean_time = start_raw.split("+")[0]
                     dt = datetime.fromisoformat(clean_time)
-                    guidance = services.get_departure_guidance(summary, location, dt)
+                    # 세션에 저장된 실시간 GPS 좌표 전달 지원
+                    user_coords = st.session_state.get("user_coords") if hasattr(st, "session_state") else None
+                    guidance = services.get_departure_guidance(summary, location, dt, current_coords=user_coords)
                     if guidance:
                         travel_guidance_list.append(guidance)
                 except Exception:
@@ -211,16 +198,16 @@ def generate_daily_briefing():
         now_dt = datetime.now()
         current_time_str = now_dt.strftime('%Y년 %m월 %d일 %H시 %M분')
 
-        # 프롬프트 명확화 (아침 브리핑임을 강력히 명시)
         user_content = f"""
-너는 다정한 친구 '태민이'야. 친구 '정수'에게 상쾌한 아침을 여는 '오늘 아침 브리핑'을 해줘. 저녁 인사를 절대 하지 마.
+너는 다정한 친구 '태민이'야. 친구 '정수'에게 상쾌한 아침을 여는 '오늘 아침 브리핑'을 해줘. 저녁 인사는 절대 하지 마.
 
 [기준 정보]
 - 현재 시각: {current_time_str} (아침 브리핑)
 
 [작성 지침]
-- 반드시 "정수야, 좋은 아침!" 또는 "정수야, 잘 잤어?" 같은 활기찬 아침 인사로 시작할 것.
-- 절대 1, 2, 3 같은 번호나 목록 기호를 쓰지 말고 부드럽고 다정한 대화체 줄글로 전할 것.
+- 첫마디는 기계적인 "좋은 아침" 대신 활기차고 자연스러운 친구 말씨로 열어줘.
+- 번호나 목록 기호 없이 부드럽고 다정한 대화체 줄글로 연결할 것.
+- 틀에 박힌 표현을 피하고, 신선하고 다양한 어휘를 골라 써줘.
 - 분량: 공백 포함 250~350자 내외.
 
 [브리핑 내용]
@@ -228,7 +215,7 @@ def generate_daily_briefing():
 2. 건강: "아침 밥 든든히 챙겨 먹고 아침 약 꼭 챙겨 먹어!" 따뜻하게 당부하기
 3. 오늘 일정: {schedule_text} {travel_text}
 4. 할 일 & 메모: 할 일({tasks_text})과 챙겨볼 메모({notes_text}) 가볍게 짚어주기
-5. 활기찬 하루 보내라는 기분 좋은 응원으로 마무리하기
+5. 기분 좋은 하루 응원으로 마무리하기
 """
         return call_gemini_rest(user_content)
     except Exception as e:
@@ -241,28 +228,22 @@ def generate_evening_briefing():
         tasks_summary = [f"- {t.get('title')}" for t in active_tasks if t.get('title')]
         tasks_text = "\n".join(tasks_summary) if tasks_summary else "밀린 할 일 없이 다 잘 끝냈어!"
 
-        # 구글 시트 최근 메모 가공
         recent_notes = services.get_all_notes(limit=5)
         notes_lines = []
         today_date = datetime.now().date()
         
         if recent_notes:
             for n in recent_notes:
-                # 1. 분류, 내용, 작성시각을 어떤 헤더명이든 안전하게 추출
                 cat = n.get("분류") or n.get("카테고리") or "메모"
                 cnt = n.get("내용") or n.get("content") or ""
-                # "시간" 키뿐 아니라 대소문자나 다른 헤더 이름도 포괄
                 created_at_raw = n.get("시간") or n.get("일시") or n.get("날짜") or n.get("date") or ""
                 if not created_at_raw and list(n.values()):
-                    created_at_raw = list(n.values())[0]  # 시트의 맨 첫 번째 열 값
+                    created_at_raw = list(n.values())[0]
                 
                 created_at_str = str(created_at_raw).strip()
-                
-                # 2. 날짜 차이 계산하여 상대 시점 단어('내일') 자동 보정
                 memo_date = None
                 if created_at_str:
                     try:
-                        # 2026-09-22 형식 추출
                         memo_date = datetime.fromisoformat(created_at_str[:10]).date()
                     except Exception:
                         pass
@@ -271,7 +252,6 @@ def generate_evening_briefing():
                 if memo_date:
                     days_diff = (today_date - memo_date).days
                     if days_diff == 1:
-                        # 어제 작성한 메모인데 "내일"이라고 적혀있다면 -> "오늘"로 변경
                         adjusted_cnt = adjusted_cnt.replace("내일", "오늘")
                         prefix = f"(어제 {created_at_str[11:16]} 작성)"
                     elif days_diff == 0:
@@ -286,14 +266,13 @@ def generate_evening_briefing():
                     
         notes_text = "\n".join(notes_lines) if notes_lines else "오늘 특별히 남겨둔 메모는 없어."
 
-        # Gemini에게 실제로 전달되는 프롬프트에 메모(notes_text) 주입
         user_content = f"""
 친구 '정수'에게 하루를 토닥여주며 편안하게 건네는 저녁 브리핑을 작성해줘.
 
 [분량 및 형식 엄수]
-- **공백 포함 250~350자 내외로 작성할 것 (절대 400자를 넘기지 마).**
-- "정수야, 오늘 하루도 정말 고생 많았어!"처럼 다정하게 이름을 부르며 시작할 것.
-- **절대 1, 2, 3 같은 번호나 목록 기호를 쓰지 말고 포근한 대화체 문단으로 이어줘.**
+- 공백 포함 250~350자 내외로 작성할 것 (절대 400자를 넘기지 마).
+- 상투적인 말 대신 오늘 하루를 진심으로 다독여주는 다정한 반말 표현을 써줘.
+- 번호나 목록 기호 없이 포근한 대화체 줄글 문단으로 이어줘.
 
 [필수 내용]
 - 고생한 정수를 따뜻하게 위로하기
@@ -305,9 +284,9 @@ def generate_evening_briefing():
     except Exception as e:
         return f"정수야, 오늘 하루도 정말 수고 많았어! 편안한 저녁 보내. (오류: {e})"
 
+
 def chat_with_taemin(user_message, chat_history=None):
     msg_clean = user_message.strip()
-    reply = ""
 
     # 0. 날짜 및 시간 질문 즉시 직접 답변
     date_keywords = [
@@ -315,7 +294,6 @@ def chat_with_taemin(user_message, chat_history=None):
         "무슨 요일", "오늘 며칠", "오늘 몇일", "지금 몇 시", "지금 몇시", "현재 시간", "현재 시각"
     ]
     if any(k in msg_clean for k in date_keywords):
-        from datetime import timezone
         kst = timezone(timedelta(hours=9))
         now_kst = datetime.now(timezone.utc).astimezone(kst)
         weekdays = ["월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일"]
@@ -326,9 +304,12 @@ def chat_with_taemin(user_message, chat_history=None):
         if any(w in msg_clean for w in ["몇 시", "몇시", "시간", "시각"]):
             reply = f"정수야, 지금 시각은 **{date_str} {time_str}**이야!"
         else:
-            reply = f"정수야, 오늘은 **{date_str}**이야! 오늘도 좋은 하루 보내자."
+            reply = f"정수야, 오늘은 **{date_str}**이야! 기분 좋은 하루 보내보자."
         
-        services.save_chat_turn(msg_clean, reply)
+        try:
+            services.save_chat_turn(msg_clean, reply)
+        except Exception:
+            pass
         return reply
 
     # 1. 완료/삭제 처리
@@ -351,11 +332,14 @@ def chat_with_taemin(user_message, chat_history=None):
         task_success, _ = services.complete_or_delete_task(search_kw)
 
         if sheet_success or task_success:
-            reply = f"🗑️ **[삭제 완료!]** 정수야, 요청한 대로 **'{search_kw}'** 관련 메모를 깔끔하게 지웠어!"
+            reply = f"🗑️ 요청한 대로 **'{search_kw}'** 메모는 깔끔하게 지워뒀어!"
         else:
-            reply = f"💬 정수야, '{search_kw}' 관련 메모를 찾아서 지우려고 했는데 이미 지워졌거나 찾지 못했어."
+            reply = f"💬 '{search_kw}' 메모를 찾아봤는데 이미 지워졌거나 목록에 없더라고."
         
-        services.save_chat_turn(msg_clean, reply)
+        try:
+            services.save_chat_turn(msg_clean, reply)
+        except Exception:
+            pass
         return reply
 
     # 2. 할 일 & 메모 저장
@@ -365,6 +349,8 @@ def chat_with_taemin(user_message, chat_history=None):
         for kw in ["기억해줘", "메모해줘", "적어둬", "남겨줘"]:
             clean_content = clean_content.replace(kw, "").strip()
         
+        sheet_success = False
+        error_detail = ""
         try:
             gc = services.get_sheet_client()
             sh = gc.open(services.SPREADSHEET_NAME)
@@ -372,7 +358,6 @@ def chat_with_taemin(user_message, chat_history=None):
             sh.sheet1.append_row([now_str, "메모", clean_content or msg_clean])
             sheet_success = True
         except Exception as sheet_err:
-            sheet_success = False
             error_detail = str(sheet_err)
         
         try:
@@ -384,16 +369,18 @@ def chat_with_taemin(user_message, chat_history=None):
             st.cache_data.clear()
 
         if sheet_success:
-            reply = f"📝 **[메모 저장 완료!]** 정수야, 잘 적어뒀어: **'{clean_content or msg_clean}'**"
+            reply = f"📝 잘 적어뒀어: **'{clean_content or msg_clean}'**"
         else:
             reply = f"❌ 구글 시트 저장 실패: `{error_detail}`"
         
-        services.save_chat_turn(msg_clean, reply)
+        try:
+            services.save_chat_turn(msg_clean, reply)
+        except Exception:
+            pass
         return reply
 
-    # 3. 일정/이동 경로 및 일반 대화
+    # 3. 일정 확인, 질문 및 일반 대화 통합 처리
     try:
-        from datetime import timezone
         kst = timezone(timedelta(hours=9))
         now_dt = datetime.now(timezone.utc).astimezone(kst)
         weekdays = ["월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일"]
@@ -410,7 +397,6 @@ def chat_with_taemin(user_message, chat_history=None):
             target_date = now_dt + timedelta(days=2)
             date_label = "모레"
         else:
-            # "10월 3일", "10/3" 등 정규식 매칭
             m = re.search(r"(\d{1,2})월\s*(\d{1,2})일", msg_clean)
             if m:
                 month, day = int(m.group(1)), int(m.group(2))
@@ -418,78 +404,58 @@ def chat_with_taemin(user_message, chat_history=None):
                 date_label = f"{month}월 {day}일"
 
         # 캘린더 일정 조회
-        events = services.fetch_events_by_date(target_date)
         events_text = ""
-        if events:
-            ev_list = []
-            for ev in events:
-                s = ev.get("summary", "일정")
-                st_time = ev.get("start", {}).get("dateTime", ev.get("start", {}).get("date", ""))
-                loc = ev.get("location", "")
-                time_disp = st_time.split("T")[1][:5] if "T" in st_time else "종일"
-                loc_disp = f" (장소: {loc})" if loc else ""
-                ev_list.append(f"- {s} [{time_disp}{loc_disp}]")
-            events_text = f"\n[{date_label} 캘린더 등록 일정]\n" + "\n".join(ev_list) + "\n"
-        else:
-            events_text = f"\n[{date_label} 캘린더 등록 일정: 없음]\n"
+        if hasattr(services, "fetch_events_by_date"):
+            events = services.fetch_events_by_date(target_date)
+            if events:
+                ev_list = []
+                for ev in events:
+                    s = ev.get("summary", "일정")
+                    st_time = ev.get("start", {}).get("dateTime", ev.get("start", {}).get("date", ""))
+                    loc = ev.get("location", "")
+                    time_disp = st_time.split("T")[1][:5] if "T" in st_time else "종일"
+                    loc_disp = f" (장소: {loc})" if loc else ""
+                    ev_list.append(f"- {s} [{time_disp}{loc_disp}]")
+                events_text = f"\n[{date_label} 캘린더 등록 일정]\n" + "\n".join(ev_list) + "\n"
+            else:
+                events_text = f"\n[{date_label} 캘린더 등록 일정: 없음]\n"
 
         # 장기 대화 기억 로드
-        long_term_memory = services.get_recent_chat_memory(limit_turns=5)
+        long_term_memory = ""
+        if hasattr(services, "get_recent_chat_memory"):
+            long_term_memory = services.get_recent_chat_memory(limit_turns=5)
         memory_section = f"\n[구글 시트 이전 대화 기억]\n{long_term_memory}\n" if long_term_memory else ""
+
+        # 실시간 GPS 기반 위치 안내
+        current_loc_str = "경기도 안산"
+        if hasattr(st, "session_state") and st.session_state.get("user_coords"):
+            lat, lng = st.session_state["user_coords"]
+            if hasattr(services, "get_address_from_coords"):
+                detected_addr = services.get_address_from_coords(lat, lng)
+                if detected_addr:
+                    current_loc_str = detected_addr
 
         prompt = (
             f"[현재 한국 표준시 기준 정보]\n"
             f"- 현재 날짜 및 시각: {current_time_str}\n"
-            f"- 정수의 기본 위치: 경기도 안산\n\n"
+            f"- 정수의 현재 위치: {current_loc_str}\n\n"
             f"{memory_section}"
             f"{events_text}\n"
             f"정수의 질문: {msg_clean}\n\n"
             f"[답변 지침]\n"
-            f"1. 일정 질문을 받으면 위의 [{date_label} 캘린더 등록 일정]을 바탕으로 명확하게 답변할 것. 일정이 없으면 없다고 다정하게 알려줘.\n"
-            f"2. 만약 [이전 대화 기억]과 관련된 질문이면 그 맥락을 이어받을 것.\n"
-            f"3. 번호 매기기 없이 다정하고 편안한 친구 반말로 답해줘."
+            f"1. 일정 질문을 받으면 [{date_label} 캘린더 등록 일정]을 기준으로 답변할 것. 일정이 없으면 없다고 편하게 말해줘.\n"
+            f"2. [이전 대화 기억]과 연결된 이야기라면 그 맥락을 잊지 않고 자연스럽게 이어받아 대답할 것.\n"
+            f"3. 뻔하고 기계적인 인사말(예: '좋은 하루 보내!', '힘내자!')은 피하고, 정수와 허물없는 친구처럼 위트 있고 생생한 반말로 표현할 것.\n"
+            f"4. 번호 매기기 형식 없이 자연스러운 문단 대화체로 답변해줘."
         )
         reply = call_gemini_rest(prompt)
     except Exception as e:
-        reply = f"정수야, 답변 준비 중 오류가 생겼어: {e}"
+        reply = f"정수야, 답변 준비하다가 오류가 생겼어: {e}"
 
-    # 모든 대화를 구글 시트에 영구 기록
-    services.save_chat_turn(msg_clean, reply)
-    return reply
-
-    # 4. 일반 대화 및 길찾기 안내 답변
+    # 대화 영구 기록
     try:
-        from datetime import timezone
-        kst = timezone(timedelta(hours=9))
-        now_dt = datetime.now(timezone.utc).astimezone(kst)
-        weekdays = ["월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일"]
-        weekday_str = weekdays[now_dt.weekday()]
-        current_time_str = now_dt.strftime(f"%Y년 %m월 %d일 {weekday_str} %H시 %M분")
+        services.save_chat_turn(msg_clean, reply)
+    except Exception:
+        pass
 
-        # 1) 구글 시트에서 장기 대화 기억 로드
-        long_term_memory = services.get_recent_chat_memory(limit_turns=5)
-        memory_section = f"\n[구글 시트에 기록된 이전 대화 기억]\n{long_term_memory}\n" if long_term_memory else ""
-
-        prompt = (
-            f"[현재 한국 표준시 기준 정보]\n"
-            f"- 현재 날짜 및 시각: {current_time_str}\n"
-            f"- 정수의 기본 위치: 경기도 안산\n\n"
-            f"{memory_section}"
-            f"정수의 현재 질문: {msg_clean}{context_addon}\n\n"
-            f"[답변 지침]\n"
-            f"1. 날짜, 시간, 일정과 관련된 이야기를 할 때는 반드시 위의 기준 정보({current_time_str})를 절대적 기준으로 삼을 것.\n"
-            f"2. 만약 [이전 대화 기억]에 언급된 내용과 관련된 질문이라면, 그때 나눈 이야기 맥락을 기억하고 다정하게 이어받아 답변할 것.\n"
-            f"3. 번호 매기기 형식 없이, 다정하고 친근한 친구 같은 반말로 답변해줘."
-        )
-        
-        reply = call_gemini_rest(prompt)
-
-        # 2) 이번 대화를 구글 시트에 영구 저장
-        try:
-            services.save_chat_turn(msg_clean, reply)
-        except Exception:
-            pass
-
-        return reply
-    except Exception as e:
-        return f"정수야, 내가 답변하려다 잠깐 오류가 생겼어: {e}"
+    return reply
