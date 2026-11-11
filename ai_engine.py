@@ -55,7 +55,7 @@ def call_gemini_rest(prompt_text):
         }
     }
     last_error = None
-    models = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
+    models = ["gemini-3.5-flash-lite", "gemini-3.5-flash"]
     
     for _ in range(max(1, len(keys))):
         api_key = get_next_api_key()
